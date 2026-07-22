@@ -256,7 +256,7 @@ impl Bot {
 
         match parsed.command {
             Command::Help => {
-                self.send_message(room_id, help_message()).await;
+                self.send_message(room_id, &help_message()).await;
             }
             Command::Play | Command::Queue => {
                 self.cmd_queue(room_id, &message_posted.message.actor_id, &parsed.args)
@@ -293,8 +293,11 @@ impl Bot {
         drop(tidal);
 
         if results.is_empty() {
-            self.send_message(room_id, &format!("No results for **{}**", query))
-                .await;
+            self.send_message(
+                room_id,
+                &card("Not Found", &format!("No results for: {}", query)),
+            )
+            .await;
             return Ok(());
         }
 
@@ -316,12 +319,15 @@ impl Bot {
 
         self.send_message(
             room_id,
-            &format!(
-                "Added **{}** · *{}* (`{}`) at #{}",
-                track.title,
-                track.artist,
-                format_duration(track.duration),
-                pos
+            &card(
+                "Added",
+                &format!(
+                    "{} · {} ({})\nPosition: #{}",
+                    track.title,
+                    track.artist,
+                    format_duration(track.duration),
+                    pos
+                ),
             ),
         )
         .await;
@@ -338,12 +344,12 @@ impl Bot {
 
             let list = rs.queue.list();
             if rs.current.is_none() && list.is_empty() {
-                "Queue is empty.".to_owned()
+                card("Queue", "Queue is empty.")
             } else {
                 let mut body = String::new();
                 if let Some(current) = &rs.current {
                     body.push_str(&format!(
-                        "Now: **{}** · *{}* (`{}`)\n",
+                        "{} · {} ({})\n\n",
                         current.track.title,
                         current.track.artist,
                         format_duration(current.track.duration)
@@ -351,14 +357,14 @@ impl Bot {
                 }
                 for (idx, track) in list.iter().enumerate() {
                     body.push_str(&format!(
-                        "`{}.` **{}** · *{}* (`{}`)\n",
+                        "{}. {} · {} ({})\n",
                         idx + 1,
                         track.title,
                         track.artist,
                         format_duration(track.duration)
                     ));
                 }
-                body
+                card("Queue", &body)
             }
         };
 
@@ -373,14 +379,17 @@ impl Bot {
             };
 
             match &rs.current {
-                Some(current) => format!(
-                    "Now playing **{}** · *{}* (`{}`) · {}",
-                    current.track.title,
-                    current.track.artist,
-                    format_duration(current.track.duration),
-                    current.audio_info
+                Some(current) => card(
+                    "Now Playing",
+                    &format!(
+                        "{} · {} ({})\n{}",
+                        current.track.title,
+                        current.track.artist,
+                        format_duration(current.track.duration),
+                        current.audio_info
+                    ),
                 ),
-                None => "Nothing is currently prepared for playback.".to_owned(),
+                None => card("Now Playing", "Nothing currently prepared."),
             }
         };
 
@@ -401,11 +410,15 @@ impl Bot {
 
         match skipped {
             Some(current) => {
-                self.send_message(room_id, &format!("Skipped **{}**", current.track.title))
-                    .await;
+                self.send_message(
+                    room_id,
+                    &card("Skipped", &current.track.title),
+                )
+                .await;
             }
             None => {
-                self.send_message(room_id, "Nothing to skip.").await;
+                self.send_message(room_id, &card("Skipped", "Nothing playing."))
+                    .await;
             }
         }
     }
@@ -429,7 +442,7 @@ impl Bot {
 
         self.send_message(
             room_id,
-            &format!("Stopped, removed {removed} queued track(s)."),
+            &card("Stopped", &format!("Removed {removed} queued track(s).")),
         )
         .await;
     }
@@ -439,25 +452,27 @@ impl Bot {
             let current = *self.volume.lock().await;
             self.send_message(
                 room_id,
-                &format!("Current volume: `{:.0}%`", current * 100.0),
+                &card("Volume", &format!("Current: {:.0}%", current * 100.0)),
             )
             .await;
             return;
         }
 
         let Ok(pct) = args.trim().parse::<u16>() else {
-            self.send_message(room_id, "Usage: `volume <0-200>`").await;
+            self.send_message(room_id, &card("Volume", "Usage: volume <0-200>"))
+                .await;
             return;
         };
 
         if pct > 200 {
-            self.send_message(room_id, "Usage: `volume <0-200>`").await;
+            self.send_message(room_id, &card("Volume", "Usage: volume <0-200>"))
+                .await;
             return;
         }
 
         let mut volume = self.volume.lock().await;
         *volume = f64::from(pct) / 100.0;
-        self.send_message(room_id, &format!("Set volume to `{pct}%`"))
+        self.send_message(room_id, &card("Volume", &format!("Set to {}%", pct)))
             .await;
     }
 
@@ -485,8 +500,11 @@ impl Bot {
                     Ok(stream) => stream,
                     Err(err) => {
                         error!(room = room_id, track_id = track.tid, error = %err, "failed to resolve stream");
-                        self.send_message(room_id, &format!("Failed to load track stream: {err}"))
-                            .await;
+                        self.send_message(
+                            room_id,
+                            &card("Stream Error", &format!("{err}")),
+                        )
+                        .await;
                         continue;
                     }
                 }
@@ -514,14 +532,20 @@ impl Bot {
     }
 
     async fn cmd_test(&self, room_id: &str) {
-        self.send_message(room_id, "LiveKit test: publishing 10s silence...")
-            .await;
+        self.send_message(
+            room_id,
+            &card("Test", "Publishing 10s of silence..."),
+        )
+        .await;
 
         let token = match self.chatto.get_call_token(room_id).await {
             Ok(token) => token,
             Err(err) => {
-                self.send_message(room_id, &format!("Failed to get call token: {err}"))
-                    .await;
+                self.send_message(
+                    room_id,
+                    &card("Test Error", &format!("Get call token: {err}")),
+                )
+                .await;
                 return;
             }
         };
@@ -536,20 +560,26 @@ impl Bot {
         {
             Ok(player) => player,
             Err(err) => {
-                self.send_message(room_id, &format!("Failed to create LiveKit player: {err}"))
-                    .await;
+                self.send_message(
+                    room_id,
+                    &card("Test Error", &format!("Create player: {err}")),
+                )
+                .await;
                 return;
             }
         };
 
         match player.play_silence_only(Duration::from_secs(10)).await {
             Ok(()) => {
-                self.send_message(room_id, "LiveKit test successful (10s silence).")
+                self.send_message(room_id, &card("Test", "10s silence published OK."))
                     .await;
             }
             Err(err) => {
-                self.send_message(room_id, &format!("LiveKit test failed: {err}"))
-                    .await;
+                self.send_message(
+                    room_id,
+                    &card("Test Failed", &format!("{err}")),
+                )
+                .await;
             }
         }
 
@@ -669,13 +699,19 @@ impl Bot {
             match task_result {
                 PlaybackTaskResult::Finished | PlaybackTaskResult::Cancelled => {}
                 PlaybackTaskResult::VoiceRequired => {
-                    self.send_message(room_id, "Join a voice channel first, then use play.")
-                        .await;
+                    self.send_message(
+                        room_id,
+                        &card("Voice Required", "Join a voice channel first, then use `play`."),
+                    )
+                    .await;
                 }
                 PlaybackTaskResult::Error(err) => {
                     error!(room = room_id, error = %err, "playback task error");
-                    self.send_message(room_id, &format!("Playback error: {err}"))
-                        .await;
+                    self.send_message(
+                        room_id,
+                        &card("Playback Error", &format!("{err}")),
+                    )
+                    .await;
                 }
             }
         }
@@ -690,12 +726,44 @@ fn parse_event_time(s: &str) -> Option<DateTime<Utc>> {
     Some(DateTime::from_naive_utc_and_offset(naive, Utc))
 }
 
+fn card(title: &str, body: &str) -> String {
+    const WIDTH: usize = 52;
+
+    let mut out = String::with_capacity(WIDTH * (body.lines().count() + 3));
+
+    let title_len = title.chars().count();
+    let dashes = WIDTH.saturating_sub(title_len + 5);
+    out.push_str("┌─ ");
+    out.push_str(title);
+    out.push(' ');
+    for _ in 0..dashes {
+        out.push('─');
+    }
+    out.push_str("┐\n");
+
+    for line in body.lines() {
+        out.push_str("│  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    out.push('└');
+    for _ in 0..(WIDTH - 2) {
+        out.push('─');
+    }
+    out.push('┘');
+    out
+}
+
 fn format_duration(seconds: i32) -> String {
     let minutes = seconds / 60;
     let seconds = seconds % 60;
     format!("{minutes}:{seconds:02}")
 }
 
-fn help_message() -> &'static str {
-    "`play <track>`\n`queue <track>`\n`queue`\n`skip`\n`stop`\n`nowplaying`\n`volume <0-200>`\n`test`\n`help`"
+fn help_message() -> String {
+    card(
+        "Commands",
+        "play <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\ntest\nhelp",
+    )
 }
