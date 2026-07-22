@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chatto::Client as ChattoClient;
 use config::AppConfig;
 use std::env;
+use tidal::Client as TidalClient;
 use tracing::{error, info};
 
 #[tokio::main]
@@ -23,6 +24,9 @@ async fn run() -> Result<()> {
         .with_context(|| format!("failed to load config from {config_path}"))?;
 
     let chatto_client = ChattoClient::new(&cfg.chatto_url, &cfg.chatto_token);
+    let tidal_client = TidalClient::new(&cfg.tidal_token_path, &cfg.tidal_quality)
+        .await
+        .context("failed to initialize tidal client")?;
 
     info!(
         rooms = ?cfg.rooms,
@@ -32,6 +36,10 @@ async fn run() -> Result<()> {
     info!(
         base_url = chatto_client.base_url(),
         "chatto client initialized"
+    );
+    info!(
+        quality = tidal_client.selected_quality(),
+        "tidal client initialized"
     );
     info!("chatto-bot-tidal rust runtime bootstrap complete");
 

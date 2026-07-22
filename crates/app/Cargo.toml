@@ -9,6 +9,7 @@ anyhow.workspace = true
 bot = { path = "../bot" }
 chatto = { path = "../chatto" }
 config = { path = "../config" }
+tidal = { path = "../tidal" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
