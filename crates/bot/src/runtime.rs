@@ -38,25 +38,13 @@ struct CurrentTrack {
     stream_url: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct RoomState {
     queue: Queue,
     current: Option<CurrentTrack>,
     playback_task: Option<JoinHandle<PlaybackTaskResult>>,
     playback_cancel: Option<Arc<AtomicBool>>,
     cursor: String,
-}
-
-impl Default for RoomState {
-    fn default() -> Self {
-        Self {
-            queue: Queue::default(),
-            current: None,
-            playback_task: None,
-            playback_cancel: None,
-            cursor: String::new(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -230,10 +218,10 @@ impl Bot {
             }
         }
 
-        if let Some(event_time) = parse_event_time(&event.created_at) {
-            if event_time < self.started_at {
-                return Ok(());
-            }
+        if let Some(event_time) = parse_event_time(&event.created_at)
+            && event_time < self.started_at
+        {
+            return Ok(());
         }
 
         let Some(body) = message_posted.message.body else {
@@ -483,7 +471,7 @@ impl Bot {
                 if rs.current.is_some() || rs.playback_task.is_some() {
                     None
                 } else {
-                    rs.queue.next()
+                    rs.queue.dequeue()
                 }
             };
 
@@ -497,7 +485,7 @@ impl Bot {
                     Ok(stream) => stream,
                     Err(err) => {
                         error!(room = room_id, track_id = track.tid, error = %err, "failed to resolve stream");
-                        self.send_message(room_id, &card("Stream Error", &format!("{err}")))
+                        self.send_message(room_id, &card("Stream Error", &err.to_string()))
                             .await;
                         continue;
                     }
@@ -566,7 +554,7 @@ impl Bot {
                     .await;
             }
             Err(err) => {
-                self.send_message(room_id, &card("Test Failed", &format!("{err}")))
+                self.send_message(room_id, &card("Test Failed", &err.to_string()))
                     .await;
             }
         }

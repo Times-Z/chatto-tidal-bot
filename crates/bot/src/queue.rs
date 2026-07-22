@@ -101,15 +101,15 @@ mod tests {
         q.add(track(1, "A", 100));
         q.add(track(2, "B", 200));
 
-        let t1 = q.next().unwrap();
+        let t1 = q.dequeue().unwrap();
         assert_eq!(t1.tid, 1);
         assert_eq!(q.len(), 1);
 
-        let t2 = q.next().unwrap();
+        let t2 = q.dequeue().unwrap();
         assert_eq!(t2.tid, 2);
         assert_eq!(q.len(), 0);
 
-        assert!(q.next().is_none());
+        assert!(q.dequeue().is_none());
     }
 
     #[test]
@@ -120,7 +120,7 @@ mod tests {
         q.add(track(1, "A", 100));
         assert!(q.current().is_none());
 
-        q.next();
+        q.dequeue();
         assert_eq!(q.current().unwrap().tid, 1);
     }
 
@@ -132,7 +132,7 @@ mod tests {
 
         assert!(q.skip());
         assert_eq!(q.len(), 1);
-        assert_eq!(q.next().unwrap().tid, 2);
+        assert_eq!(q.dequeue().unwrap().tid, 2);
         assert!(!q.skip());
     }
 
@@ -144,7 +144,7 @@ mod tests {
         q.clear();
 
         assert_eq!(q.len(), 0);
-        assert!(q.next().is_none());
+        assert!(q.dequeue().is_none());
     }
 
     #[test]
@@ -156,7 +156,7 @@ mod tests {
         let list = q.list();
         assert_eq!(list.len(), 2);
 
-        q.next();
+        q.dequeue();
         let list = q.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].tid, 2);
