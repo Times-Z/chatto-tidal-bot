@@ -1,3 +1,5 @@
+// Package tidal provides data models for Tidal API responses, search results,
+// and audio stream metadata.
 package tidal
 
 import (

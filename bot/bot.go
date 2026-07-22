@@ -22,7 +22,7 @@ import (
 const errNotMember = "not a member of this room"
 const errPermissionDenied = "permission denied"
 
-// artistSuffix returns " by Artist" if artist is non-empty, otherwise "".
+// artistSuffix returns " by <artist>" when artist is non-empty, or an empty string otherwise.
 func artistSuffix(artist string) string {
 	if artist == "" {
 		return ""
@@ -30,7 +30,7 @@ func artistSuffix(artist string) string {
 	return " by " + artist
 }
 
-// formatDuration formats seconds as "m:ss".
+// formatDuration converts seconds to a "m:ss" string.
 func formatDuration(seconds int) string {
 	m := seconds / 60
 	s := seconds % 60
@@ -42,21 +42,8 @@ func formatTrack(t Track) string {
 	return fmt.Sprintf("**%s** — `%s`", t.Title, formatDuration(t.Duration))
 }
 
-// queueETA returns an estimated-time-until-play string based on total
-// remaining duration, or empty string if fewer than 2 tracks remain.
-func (b *Bot) queueETA() string {
-	if b.queue.Len() <= 1 {
-		return ""
-	}
-	total := 0
-	for _, t := range b.queue.List() {
-		total += t.Duration
-	}
-	return fmt.Sprintf("· ~%s until play", formatDuration(total))
-}
-
-// Bot is the main bot instance. It manages the queue, processes chat
-// commands, and orchestrates Tidal streaming and LiveKit playback.
+// Bot is the main bot instance. It manages all rooms, each with its own
+// queue and playback state, and orchestrates Tidal streaming and LiveKit publishing.
 type Bot struct {
 	cfg          *Config
 	chattoClient *chatto.Client
@@ -65,20 +52,26 @@ type Bot struct {
 	botUserID    string
 	startedAt    time.Time
 
-	queue *Queue
+	mu     sync.Mutex
+	volume float64
 
+	rooms map[string]*roomState
+
+	seenEvents   map[string]struct{}
+	seenEventsMu sync.Mutex
+}
+
+// roomState holds per-room playback state so that commands in one room
+// never interfere with playback in another room.
+type roomState struct {
 	mu             sync.Mutex
-	currentRoom    string
-	activePlayer   *livekit.Player
+	queue          *Queue
 	running        bool
-	volume         float64
+	activePlayer   *livekit.Player
 	playCtx        context.Context
 	playCancel     context.CancelFunc
 	trackStartTime time.Time
 	trackAudioInfo string
-
-	seenEvents   map[string]struct{}
-	seenEventsMu sync.Mutex
 }
 
 // Config holds the bot's runtime configuration.
@@ -93,8 +86,6 @@ type Config struct {
 	Volume         int
 }
 
-// New creates a new Bot, initializing the Tidal client and fetching
-// the bot's own user ID for message filtering.
 func New(ctx context.Context, cfg *Config, chattoClient *chatto.Client) (*Bot, error) {
 	tidalClient, err := tidal.NewClient(ctx, cfg.TidalTokenPath)
 	if err != nil {
@@ -111,6 +102,11 @@ func New(ctx context.Context, cfg *Config, chattoClient *chatto.Client) (*Bot, e
 		slog.Warn("could not get bot user ID, own messages will not be filtered")
 	}
 
+	rooms := make(map[string]*roomState, len(cfg.Rooms))
+	for _, id := range cfg.Rooms {
+		rooms[id] = &roomState{queue: NewQueue()}
+	}
+
 	return &Bot{
 		cfg:          cfg,
 		chattoClient: chattoClient,
@@ -118,15 +114,20 @@ func New(ctx context.Context, cfg *Config, chattoClient *chatto.Client) (*Bot, e
 		botName:      botName,
 		botUserID:    botUserID,
 		startedAt:    time.Now(),
-		queue:        NewQueue(),
+		rooms:        rooms,
 		volume:       float64(cfg.Volume) / 100.0,
 		seenEvents:   make(map[string]struct{}),
 	}, nil
 }
 
-// Run enters the main event loop, polling all configured rooms for new
-// events at the configured interval. It handles messages, auto-joins
-// rooms as needed, and auto-starts playback when tracks are queued.
+// room returns the roomState for a given roomID. The room is guaranteed
+// to exist because entries are created in New for each configured room.
+func (b *Bot) room(roomID string) *roomState {
+	return b.rooms[roomID]
+}
+
+// Run starts the bot event loop. It sets presence, then polls all configured
+// rooms on a ticker for new events and auto-starts playback when tracks are queued.
 func (b *Bot) Run(ctx context.Context) error {
 	slog.Info("bot started",
 		"rooms", b.cfg.Rooms,
@@ -161,7 +162,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 }
 
-// setPresence sets the bot's online status and custom status on Chatto.
+// setPresence sets the bot's online status and custom status text on Chatto.
 func (b *Bot) setPresence(ctx context.Context) {
 	if err := b.chattoClient.UpdatePresence(ctx, "PRESENCE_STATUS_ONLINE", true); err != nil {
 		slog.Warn("set online presence", "error", err)
@@ -171,14 +172,16 @@ func (b *Bot) setPresence(ctx context.Context) {
 	}
 }
 
-// resetSeenEvents clears the deduplication set to prevent unbounded memory growth.
+// resetSeenEvents clears the deduplication set, allowing previously seen events
+// to be re-processed. Called periodically to avoid unbounded memory growth.
 func (b *Bot) resetSeenEvents() {
 	b.seenEventsMu.Lock()
 	b.seenEvents = make(map[string]struct{})
 	b.seenEventsMu.Unlock()
 }
 
-// pollRoom fetches and processes new events for a single room.
+// pollRoom fetches new timeline events for a room, updates the cursor, and
+// processes each event. Errors are handled by handlePollError.
 func (b *Bot) pollRoom(ctx context.Context, roomID string, cursors map[string]string) {
 	after := cursors[roomID]
 	slog.Debug("polling room events", "room", roomID, "cursor", after)
@@ -193,7 +196,7 @@ func (b *Bot) pollRoom(ctx context.Context, roomID string, cursors map[string]st
 	page := resp.Page
 	cursors[roomID] = page.EndCursor
 	if len(page.Events) > 0 {
-		slog.Info("received events", "room", roomID, "count", len(page.Events), "cursor", page.EndCursor)
+		slog.Debug("received events", "room", roomID, "count", len(page.Events), "cursor", page.EndCursor)
 	} else {
 		slog.Debug("no new events", "room", roomID, "cursor", page.EndCursor)
 	}
@@ -202,8 +205,8 @@ func (b *Bot) pollRoom(ctx context.Context, roomID string, cursors map[string]st
 	}
 }
 
-// handlePollError handles errors from GetRoomEvents, attempting to
-// self-add the bot to the room if it's not a member.
+// handlePollError handles room polling errors. If the error indicates the bot
+// is not a member, it attempts to add itself to the room automatically.
 func (b *Bot) handlePollError(ctx context.Context, roomID string, err error, after string) {
 	if strings.Contains(err.Error(), errNotMember) || strings.Contains(err.Error(), errPermissionDenied) {
 		slog.Info("not a member, trying to self-add to room", "room", roomID)
@@ -217,19 +220,16 @@ func (b *Bot) handlePollError(ctx context.Context, roomID string, err error, aft
 			slog.Error("add member failed", "room", roomID, "error", addErr)
 			return
 		}
-		resp, err := b.chattoClient.GetRoomEvents(ctx, roomID, after, 50)
-		if err != nil {
+		if _, err := b.chattoClient.GetRoomEvents(ctx, roomID, after, 50); err != nil {
 			slog.Error("poll room events after join", "room", roomID, "error", err)
 		}
-		_ = resp
 	} else {
 		slog.Error("poll room events", "room", roomID, "error", err)
 	}
 }
 
-// processEvent handles a single room timeline event, filtering out
-// events that should be skipped (own messages, before-bot-start, etc.)
-// and dispatching message events to handleMessage.
+// processEvent handles a single room event. It filters out own messages,
+// events that occurred before the bot started, and already-seen events.
 func (b *Bot) processEvent(ctx context.Context, roomID string, event chatto.RoomTimelineEvent) {
 	if event.MessagePosted == nil {
 		return
@@ -264,21 +264,22 @@ func (b *Bot) processEvent(ctx context.Context, roomID string, event chatto.Room
 	b.handleMessage(ctx, roomID, msg)
 }
 
-// autoStartPlayback starts playback in any room that has queued tracks
-// but is not currently playing. Idempotent — only starts if not running.
+// autoStartPlayback checks each room for a non-empty queue and starts playback
+// if the room is not already playing.
 func (b *Bot) autoStartPlayback(ctx context.Context) {
 	for _, roomID := range b.cfg.Rooms {
-		b.mu.Lock()
-		running := b.running
-		b.mu.Unlock()
-		if !running && b.queue.Len() > 0 {
+		rs := b.room(roomID)
+		rs.mu.Lock()
+		running := rs.running
+		rs.mu.Unlock()
+		if !running && rs.queue.Len() > 0 {
 			b.startPlayback(ctx, roomID)
 		}
 	}
 }
 
-// handleMessage parses a chat message as a bot command and dispatches
-// to the appropriate command handler.
+// handleMessage parses a message body for commands and dispatches to the
+// appropriate handler method.
 func (b *Bot) handleMessage(ctx context.Context, roomID string, msg chatto.Message) {
 	parsed := parseCommand(*msg.Body, b.botName)
 	if parsed == nil {
@@ -319,13 +320,15 @@ func (b *Bot) handleMessage(ctx context.Context, roomID string, msg chatto.Messa
 	}
 }
 
+// cmdHelp sends a list of available commands to the room.
 func (b *Bot) cmdHelp(ctx context.Context, roomID string) {
-	b.sendMessage(ctx, roomID, "🎧 **Tidal Bot** — Commands\n\n`play <track>` — Play a track\n`queue <track>` — Add to queue\n`queue` — View queue\n`skip` — Skip to next\n`stop` — Stop & clear queue\n`nowplaying` — Now playing\n`volume <0-200>` — Set volume\n`help` — This message")
+	b.sendMessage(ctx, roomID, "**Tidal Bot** — Commands\n\n`play <track>` — Play a track\n`queue <track>` — Add to queue\n`queue` — View queue\n`skip` — Skip to next\n`stop` — Stop & clear queue\n`nowplaying` — Now playing\n`volume <0-200>` — Set volume\n`help` — This message")
 }
 
-// cmdTest tests LiveKit connectivity by publishing 10 seconds of silence.
+// cmdTest joins the voice call, publishes 10 seconds of silence, then leaves.
+// It verifies LiveKit connectivity without playing actual audio.
 func (b *Bot) cmdTest(ctx context.Context, roomID string) {
-	b.sendMessage(ctx, roomID, "🔇 Testing LiveKit connection...")
+	b.sendMessage(ctx, roomID, "Testing LiveKit connection...")
 
 	go func() {
 		joined, err := b.chattoClient.JoinCall(ctx, roomID)
@@ -360,92 +363,33 @@ func (b *Bot) cmdTest(ctx context.Context, roomID string) {
 		if err != nil {
 			b.sendMessage(ctx, roomID, fmt.Sprintf("Test failed: %v", err))
 		} else {
-			b.sendMessage(ctx, roomID, "✅ LiveKit connection OK · 10s silence")
+			b.sendMessage(ctx, roomID, "LiveKit connection OK · 10s silence")
 		}
 	}()
 }
 
-// resolveTracks resolves a user query into track results. It first tries
-// to parse the query as a Tidal URL (track/album/playlist/artist), falling
-// back to text search.
-func (b *Bot) resolveTracks(ctx context.Context, query string) ([]tidal.SearchResult, string, error) {
-	if contentType, id, err := tidal.ParseTidalURL(query); err == nil {
-		slog.Info("detected tidal URL", "type", contentType, "id", id)
-		switch contentType {
-		case "track":
-			return b.resolveTrackURL(ctx, id)
-		case "album":
-			return b.resolveAlbumURL(ctx, id)
-		case "playlist":
-			return b.resolvePlaylistURL(ctx, id)
-		case "artist":
-			return b.resolveArtistURL(ctx, id)
-		}
-	} else {
-		slog.Warn("not a tidal URL", "error", err, "query", query)
-	}
+// resolveTracks searches Tidal for tracks matching a query string.
+// Only text search is supported; URL-based resolution was removed.
+func (b *Bot) resolveTracks(ctx context.Context, query string) ([]tidal.SearchResult, error) {
 	results, err := b.tidalClient.Search(ctx, query, 5)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if len(results) == 0 {
-		return nil, "", nil
+		return nil, nil
 	}
-	return results, "search", nil
+	return results, nil
 }
 
-func (b *Bot) resolveTrackURL(ctx context.Context, id string) ([]tidal.SearchResult, string, error) {
-	tid, parseErr := strconv.ParseUint(id, 10, 64)
-	if parseErr != nil {
-		return nil, "", fmt.Errorf("invalid track ID: %s", id)
-	}
-	track, err := b.tidalClient.GetTrack(ctx, tid)
-	if err != nil {
-		return nil, "", fmt.Errorf("get track: %w", err)
-	}
-	return []tidal.SearchResult{{ID: track.ID, Title: track.Title, Artist: track.Artist, Duration: track.Duration}}, "track", nil
-}
-
-func (b *Bot) resolveAlbumURL(ctx context.Context, id string) ([]tidal.SearchResult, string, error) {
-	aid, parseErr := strconv.ParseUint(id, 10, 64)
-	if parseErr != nil {
-		return nil, "", fmt.Errorf("invalid album ID: %s", id)
-	}
-	tracks, err := b.tidalClient.GetAlbumTracks(ctx, aid)
-	if err != nil {
-		return nil, "", fmt.Errorf("get album: %w", err)
-	}
-	return tracks, "album", nil
-}
-
-func (b *Bot) resolvePlaylistURL(ctx context.Context, id string) ([]tidal.SearchResult, string, error) {
-	tracks, err := b.tidalClient.GetPlaylistTracks(ctx, id)
-	if err != nil {
-		return nil, "", fmt.Errorf("get playlist: %w", err)
-	}
-	return tracks, "playlist", nil
-}
-
-func (b *Bot) resolveArtistURL(ctx context.Context, id string) ([]tidal.SearchResult, string, error) {
-	aid, parseErr := strconv.ParseUint(id, 10, 64)
-	if parseErr != nil {
-		return nil, "", fmt.Errorf("invalid artist ID: %s", id)
-	}
-	tracks, err := b.tidalClient.GetArtistTopTracks(ctx, aid)
-	if err != nil {
-		return nil, "", fmt.Errorf("get artist tracks: %w", err)
-	}
-	return tracks, "artist", nil
-}
-
-// cmdPlay searches for or resolves a track, queues it, and starts playback.
+// cmdPlay searches for a track by name and queues the first result.
+// If multiple results are found they are shown and the first is queued.
 func (b *Bot) cmdPlay(ctx context.Context, roomID, actorID, query string) {
 	if query == "" {
-		b.sendMessage(ctx, roomID, "Usage: `/play <track name>` — e.g. `/play Daft Punk Around the World`")
+		b.sendMessage(ctx, roomID, "Usage: `play <track name>` — e.g. `play Daft Punk Around the World`")
 		return
 	}
 
-	tracks, sourceType, err := b.resolveTracks(ctx, query)
+	tracks, err := b.resolveTracks(ctx, query)
 	if err != nil {
 		b.sendMessage(ctx, roomID, fmt.Sprintf("Error: %v", err))
 		return
@@ -455,34 +399,29 @@ func (b *Bot) cmdPlay(ctx context.Context, roomID, actorID, query string) {
 		return
 	}
 
-	if sourceType == "search" {
-		if len(tracks) > 1 {
-			var msg strings.Builder
-			msg.WriteString(fmt.Sprintf("🔍 Top results for \"**%s**\":\n", query))
-			for i, r := range tracks {
-				msg.WriteString(fmt.Sprintf("`%d.` %s\n", i+1, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration})))
-			}
-			msg.WriteString(fmt.Sprintf("\nPlaying first result: %s", formatTrack(Track{Title: tracks[0].Title, Artist: tracks[0].Artist, Duration: tracks[0].Duration})))
-			b.sendMessage(ctx, roomID, msg.String())
+	if len(tracks) > 1 {
+		var msg strings.Builder
+		msg.WriteString(fmt.Sprintf("Top results for \"**%s**\":\n", query))
+		for i, r := range tracks {
+			msg.WriteString(fmt.Sprintf("`%d.` %s\n", i+1, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration})))
 		}
-		tracks = tracks[:1]
-	} else {
-		sourceLabel := map[string]string{"track": "Track", "album": "Album", "playlist": "Playlist", "artist": "Artist Top Tracks"}[sourceType]
-		b.sendMessage(ctx, roomID, fmt.Sprintf("📦 Loading **%s** (%d track(s))...", sourceLabel, len(tracks)))
+		msg.WriteString(fmt.Sprintf("\nPlaying first result: %s", formatTrack(Track{Title: tracks[0].Title, Artist: tracks[0].Artist, Duration: tracks[0].Duration})))
+		b.sendMessage(ctx, roomID, msg.String())
 	}
+	tracks = tracks[:1]
 
 	b.addTracksToQueue(ctx, roomID, actorID, tracks)
 }
 
-// cmdQueue adds a track to the queue without starting playback, or lists
-// the current queue if no query is given.
+// cmdQueue searches for a track by name and appends the first result to the
+// end of the queue. With no arguments, it shows the current queue.
 func (b *Bot) cmdQueue(ctx context.Context, roomID, actorID, query string) {
 	if query == "" {
 		b.printQueue(ctx, roomID)
 		return
 	}
 
-	tracks, sourceType, err := b.resolveTracks(ctx, query)
+	tracks, err := b.resolveTracks(ctx, query)
 	if err != nil {
 		b.sendMessage(ctx, roomID, fmt.Sprintf("Error: %v", err))
 		return
@@ -492,21 +431,17 @@ func (b *Bot) cmdQueue(ctx context.Context, roomID, actorID, query string) {
 		return
 	}
 
-	if sourceType == "search" {
-		tracks = tracks[:1]
-	} else {
-		sourceLabel := map[string]string{"track": "Track", "album": "Album", "playlist": "Playlist", "artist": "Artist Top Tracks"}[sourceType]
-		b.sendMessage(ctx, roomID, fmt.Sprintf("📦 Loading **%s** (%d track(s))...", sourceLabel, len(tracks)))
-	}
+	tracks = tracks[:1]
 
 	b.addTracksToQueue(ctx, roomID, actorID, tracks)
 }
 
-// printQueue sends a formatted message listing all tracks in the queue.
+// printQueue sends the current queue listing (with total duration) to the room.
 func (b *Bot) printQueue(ctx context.Context, roomID string) {
-	tracks := b.queue.List()
-	if b.queue.Len() == 0 {
-		b.sendMessage(ctx, roomID, "📋 Queue is empty.")
+	rs := b.room(roomID)
+	tracks := rs.queue.List()
+	if rs.queue.Len() == 0 {
+		b.sendMessage(ctx, roomID, "Queue is empty.")
 		return
 	}
 	total := 0
@@ -514,18 +449,20 @@ func (b *Bot) printQueue(ctx context.Context, roomID string) {
 		total += t.Duration
 	}
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("📋 **Queue** · %d tracks · `%s`\n", len(tracks), formatDuration(total)))
+	msg.WriteString(fmt.Sprintf("**Queue** · %d tracks · `%s`\n", len(tracks), formatDuration(total)))
 	for i, t := range tracks {
 		msg.WriteString(fmt.Sprintf("`%d.` %s\n", i+1, formatTrack(t)))
 	}
 	b.sendMessage(ctx, roomID, msg.String())
 }
 
-// addTracksToQueue adds resolved tracks to the queue and sends a
-// confirmation message with queue position and ETA.
+// addTracksToQueue appends one or more tracks to the room's queue and sends
+// a confirmation message to the room.
 func (b *Bot) addTracksToQueue(ctx context.Context, roomID, actorID string, tracks []tidal.SearchResult) {
+	rs := b.room(roomID)
+
 	for _, r := range tracks {
-		b.queue.Add(Track{
+		rs.queue.Add(Track{
 			TID:       r.ID,
 			Title:     r.Title,
 			Artist:    r.Artist,
@@ -536,191 +473,231 @@ func (b *Bot) addTracksToQueue(ctx context.Context, roomID, actorID string, trac
 
 	if len(tracks) == 1 {
 		r := tracks[0]
-		pos := b.queue.Len()
-		msg := fmt.Sprintf("🎵 Added #**%d** — %s", pos, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration}))
-		if eta := b.queueETA(); eta != "" {
+		pos := rs.queue.Len()
+
+		total := 0
+		for _, t := range rs.queue.List() {
+			total += t.Duration
+		}
+		eta := ""
+		if pos > 1 {
+			eta = fmt.Sprintf("· ~%s until play", formatDuration(total))
+		}
+
+		msg := fmt.Sprintf("Added #**%d** — %s", pos, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration}))
+		if eta != "" {
 			msg += " " + eta
 		}
 		b.sendMessage(ctx, roomID, msg)
 	} else {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("🎵 Added **%d** tracks to queue", len(tracks)))
+		b.sendMessage(ctx, roomID, fmt.Sprintf("Added **%d** tracks to queue", len(tracks)))
 	}
 }
 
-// cmdSkip cancels the current playback, advancing to the next track in the queue.
+// cmdSkip cancels the current playback context, causing the playback loop to
+// advance to the next track in the queue.
 func (b *Bot) cmdSkip(ctx context.Context, roomID string) {
-	cur, _ := b.queue.Current()
-	b.mu.Lock()
-	if b.playCancel != nil {
-		b.playCancel()
+	rs := b.room(roomID)
+	cur, _ := rs.queue.Current()
+	rs.mu.Lock()
+	if rs.playCancel != nil {
+		rs.playCancel()
 	}
-	b.mu.Unlock()
+	rs.mu.Unlock()
 	if cur.Title != "" {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("⏭ Skipped — %s", formatTrack(cur)))
+		b.sendMessage(ctx, roomID, fmt.Sprintf("Skipped — %s", formatTrack(cur)))
 	} else {
-		b.sendMessage(ctx, roomID, "⏭ Skipped")
+		b.sendMessage(ctx, roomID, "Skipped")
 	}
 }
 
-// cmdStop clears the queue and cancels playback, leaving the voice call.
+// cmdStop cancels playback, clears the queue, disconnects from LiveKit,
+// and leaves the voice call.
 func (b *Bot) cmdStop(ctx context.Context, roomID string) {
-	n := b.queue.Len()
-	b.mu.Lock()
-	if b.playCancel != nil {
-		b.playCancel()
+	rs := b.room(roomID)
+	n := rs.queue.Len()
+	rs.mu.Lock()
+	if rs.playCancel != nil {
+		rs.playCancel()
 	}
-	b.mu.Unlock()
-	b.queue.Clear()
-	b.sendMessage(ctx, roomID, fmt.Sprintf("⏹ Stopped · %d track(s) removed", n))
+	player := rs.activePlayer
+	rs.activePlayer = nil
+	rs.running = false
+	rs.mu.Unlock()
+	rs.queue.Clear()
+
+	if player != nil {
+		player.Disconnect()
+	}
+
+	b.leaveCall(ctx, roomID)
+	b.sendMessage(ctx, roomID, fmt.Sprintf("Stopped · %d track(s) removed", n))
 }
 
-// cmdNowPlaying shows the currently playing track and remaining queue count.
+// cmdNowPlaying sends the currently playing track title, artist, elapsed time,
+// total duration, and audio quality info to the room.
 func (b *Bot) cmdNowPlaying(ctx context.Context, roomID string) {
-	track, ok := b.queue.Current()
+	rs := b.room(roomID)
+	track, ok := rs.queue.Current()
 	if !ok {
 		b.sendMessage(ctx, roomID, "Nothing playing right now.")
 		return
 	}
-	remaining := b.queue.Len()
+	remaining := rs.queue.Len()
 
-	b.mu.Lock()
-	elapsed := int(time.Since(b.trackStartTime).Seconds())
-	b.mu.Unlock()
-
-	b.mu.Lock()
-	audioInfo := b.trackAudioInfo
-	b.mu.Unlock()
+	rs.mu.Lock()
+	elapsed := int(time.Since(rs.trackStartTime).Seconds())
+	audioInfo := rs.trackAudioInfo
+	rs.mu.Unlock()
 
 	msg := fmt.Sprintf("Now playing : %s%s [%s/%s] · %s", track.Title, artistSuffix(track.Artist), formatDuration(elapsed), formatDuration(track.Duration), audioInfo)
 	if remaining > 1 {
-		msg += fmt.Sprintf("\n📋 `%d` more in queue", remaining-1)
+		msg += fmt.Sprintf("\n`%d` more in queue", remaining-1)
 	}
 	b.sendMessage(ctx, roomID, msg)
 }
 
-// cmdVolume shows or sets the playback volume (0–200%).
+// cmdVolume shows the current volume setting, or sets it globally (0–200%)
+// across all rooms. Changes take effect immediately on the active player.
 func (b *Bot) cmdVolume(ctx context.Context, roomID, args string) {
 	if args == "" {
 		b.mu.Lock()
 		v := b.volume
 		b.mu.Unlock()
-		b.sendMessage(ctx, roomID, fmt.Sprintf("🔊 Volume: `%.0f%%`", v*100))
+		b.sendMessage(ctx, roomID, fmt.Sprintf("Volume: `%.0f%%`", v*100))
 		return
 	}
 
 	pct, err := strconv.Atoi(args)
 	if err != nil || pct < 0 || pct > 200 {
-		b.sendMessage(ctx, roomID, "Usage: `/volume <0-200>` — set volume percentage")
+		b.sendMessage(ctx, roomID, "Usage: `volume <0-200>` — set volume percentage")
 		return
 	}
 
 	v := float64(pct) / 100.0
 	b.mu.Lock()
 	b.volume = v
-	if b.activePlayer != nil {
-		b.activePlayer.SetVolume(v)
+	for _, rs := range b.rooms {
+		rs.mu.Lock()
+		if rs.activePlayer != nil {
+			rs.activePlayer.SetVolume(v)
+		}
+		rs.mu.Unlock()
 	}
 	b.mu.Unlock()
-	b.sendMessage(ctx, roomID, fmt.Sprintf("🔊 Volume set to `%d%%`", pct))
+	b.sendMessage(ctx, roomID, fmt.Sprintf("Volume set to `%d%%`", pct))
 }
 
-// startPlayback begins a goroutine that plays through the queue sequentially.
-// It is a no-op if playback is already running.
+// startPlayback begins a goroutine that iterates through the room's queue,
+// playing each track sequentially. It sets running to true to prevent
+// concurrent playback loops.
 func (b *Bot) startPlayback(ctx context.Context, roomID string) {
-	b.mu.Lock()
-	if b.running {
-		b.mu.Unlock()
+	rs := b.room(roomID)
+
+	rs.mu.Lock()
+	if rs.running {
+		rs.mu.Unlock()
 		return
 	}
-	b.running = true
-	b.currentRoom = roomID
-	b.mu.Unlock()
+	rs.running = true
+	rs.mu.Unlock()
 
 	go func() {
 		for {
-			track, ok := b.queue.Next()
+			track, ok := rs.queue.Next()
 			if !ok {
 				b.endPlayback(roomID)
 				return
 			}
 
 			playCtx, cancel := context.WithCancel(context.Background())
-			b.mu.Lock()
-			b.playCtx = playCtx
-			b.playCancel = cancel
-			b.mu.Unlock()
+			rs.mu.Lock()
+			rs.playCtx = playCtx
+			rs.playCancel = cancel
+			rs.mu.Unlock()
 
 			err := b.playTrack(playCtx, roomID, track)
 			cancel()
 
 			if err != nil && err != context.Canceled {
 				slog.Error("play track error", "error", err)
-				b.chattoClient.CreateMessage(context.Background(), roomID, fmt.Sprintf("⚠️ Playback error: %v", err))
+				b.chattoClient.CreateMessage(context.Background(), roomID, fmt.Sprintf("Playback error: %v", err))
 			}
 		}
 	}()
 }
 
-// endPlayback marks playback as stopped and sends an empty-queue message.
-// The bot stays in the voice call, ready for more tracks.
+// endPlayback stops playback, disconnects the LiveKit player, and notifies
+// the room that the queue is empty. The bot stays in the voice call for
+// subsequent tracks.
 func (b *Bot) endPlayback(roomID string) {
-	b.mu.Lock()
-	b.running = false
-	b.currentRoom = ""
-	b.mu.Unlock()
+	rs := b.room(roomID)
+	rs.mu.Lock()
+	rs.running = false
+	player := rs.activePlayer
+	rs.mu.Unlock()
 
-	b.chattoClient.CreateMessage(context.Background(), roomID, "Queue empty — add more with `/play`")
+	if player != nil {
+		player.Disconnect()
+		rs.mu.Lock()
+		rs.activePlayer = nil
+		rs.mu.Unlock()
+	}
+
+	b.chattoClient.CreateMessage(context.Background(), roomID, "Queue empty — add more with `play`")
 }
 
-// playTrack plays a single track: joins the voice call, creates a LiveKit
-// player, streams the track from Tidal, and blocks until playback completes.
+// playTrack streams a track from Tidal and publishes it to LiveKit via ffmpeg.
+// It ensures a LiveKit connection exists (joining the voice call if necessary),
+// then decodes the audio and writes PCM16 samples to the track.
 func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
-	remaining := b.queue.Len()
+	rs := b.room(roomID)
+	remaining := rs.queue.Len()
 
-	b.mu.Lock()
-	b.trackStartTime = time.Now()
-	b.mu.Unlock()
+	rs.mu.Lock()
+	rs.trackStartTime = time.Now()
+	rs.mu.Unlock()
 
-	msg := fmt.Sprintf("Now playing : %s%s [0:00/%s] · %s", track.Title, artistSuffix(track.Artist), formatDuration(track.Duration), b.trackAudioInfo)
+	msg := fmt.Sprintf("Now playing : %s%s [0:00/%s] · %s", track.Title, artistSuffix(track.Artist), formatDuration(track.Duration), rs.trackAudioInfo)
 	if remaining > 0 {
-		msg += fmt.Sprintf("\n📋 `%d` more in queue", remaining)
+		msg += fmt.Sprintf("\n`%d` more in queue", remaining)
 	}
 	b.chattoClient.CreateMessage(context.Background(), roomID, msg)
 
-	joined, err := b.chattoClient.JoinCall(ctx, roomID)
-	if err != nil {
-		return fmt.Errorf("join call: %w", err)
-	}
-	if !joined {
-		b.chattoClient.CreateMessage(context.Background(), roomID, "Join a voice channel first and try again.")
-		return nil
-	}
+	// Ensure we have a LiveKit player connected.
+	rs.mu.Lock()
+	player := rs.activePlayer
+	rs.mu.Unlock()
 
-	token, err := b.chattoClient.GetCallToken(ctx, roomID)
-	if err != nil {
-		return fmt.Errorf("get call token: %w", err)
+	if player == nil {
+		joined, err := b.chattoClient.JoinCall(ctx, roomID)
+		if err != nil {
+			return fmt.Errorf("join call: %w", err)
+		}
+		if !joined {
+			b.chattoClient.CreateMessage(context.Background(), roomID, "Join a voice channel first and try again.")
+			return nil
+		}
+
+		token, err := b.chattoClient.GetCallToken(ctx, roomID)
+		if err != nil {
+			return fmt.Errorf("get call token: %w", err)
+		}
+
+		player, err = livekit.NewPlayer(livekit.Config{
+			URL:   b.cfg.LivekitURL,
+			Token: token.Token,
+			Room:  roomID,
+		})
+		if err != nil {
+			return fmt.Errorf("create livekit player: %w", err)
+		}
+
+		rs.mu.Lock()
+		rs.activePlayer = player
+		player.SetVolume(b.volume)
+		rs.mu.Unlock()
 	}
-
-	player, err := livekit.NewPlayer(livekit.Config{
-		URL:   b.cfg.LivekitURL,
-		Token: token.Token,
-		Room:  roomID,
-	})
-	if err != nil {
-		return fmt.Errorf("create livekit player: %w", err)
-	}
-
-	b.mu.Lock()
-	b.activePlayer = player
-	b.activePlayer.SetVolume(b.volume)
-	b.mu.Unlock()
-
-	defer func() {
-		player.Disconnect()
-		b.mu.Lock()
-		b.activePlayer = nil
-		b.mu.Unlock()
-	}()
 
 	slog.Info("starting tidal stream", "tid", track.TID)
 	stream, err := b.tidalClient.StreamTrack(ctx, track.TID)
@@ -729,10 +706,10 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 	}
 	defer stream.Reader.Close()
 
-	b.mu.Lock()
-	b.trackAudioInfo = stream.FormatAudioInfo()
-	b.mu.Unlock()
-	slog.Info("tidal stream ready, starting playback", "duration", stream.Duration, "audio", b.trackAudioInfo)
+	rs.mu.Lock()
+	rs.trackAudioInfo = stream.FormatAudioInfo()
+	rs.mu.Unlock()
+	slog.Info("tidal stream ready, starting playback", "duration", stream.Duration, "audio", rs.trackAudioInfo)
 
 	return player.Play(ctx, stream.Reader, nil)
 }
@@ -744,15 +721,15 @@ func (b *Bot) leaveCall(ctx context.Context, roomID string) {
 	}
 }
 
-// sendMessage sends a chat message, logging any error but not returning it.
+// sendMessage sends a text message to a room.
 func (b *Bot) sendMessage(ctx context.Context, roomID, text string) {
 	if err := b.chattoClient.CreateMessage(ctx, roomID, text); err != nil {
 		slog.Error("send message", "error", err)
 	}
 }
 
-// parseEventTime attempts to parse a Chatto timestamp string across
-// multiple RFC3339 and common protobuf timestamp formats.
+// parseEventTime parses a timestamp string using multiple RFC 3339 variants.
+// Returns the zero time if none of the formats match.
 func parseEventTime(s string) time.Time {
 	formats := []string{
 		time.RFC3339Nano,
@@ -770,17 +747,17 @@ func parseEventTime(s string) time.Time {
 	return time.Time{}
 }
 
-// Shutdown gracefully stops the bot, cancelling any active playback,
-// disconnecting the LiveKit player, and closing the Tidal client.
 func (b *Bot) Shutdown() {
 	slog.Info("shutting down bot...")
-	b.mu.Lock()
-	if b.playCancel != nil {
-		b.playCancel()
+	for _, rs := range b.rooms {
+		rs.mu.Lock()
+		if rs.playCancel != nil {
+			rs.playCancel()
+		}
+		if rs.activePlayer != nil {
+			rs.activePlayer.Disconnect()
+		}
+		rs.mu.Unlock()
 	}
-	if b.activePlayer != nil {
-		b.activePlayer.Disconnect()
-	}
-	b.mu.Unlock()
 	b.tidalClient.Close()
 }

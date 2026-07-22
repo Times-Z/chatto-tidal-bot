@@ -94,6 +94,7 @@ func artistName(t tidalTrack) string {
 	return ""
 }
 
+// searchResponse wraps the JSON shape returned by the Tidal track search endpoint.
 type searchResponse struct {
 	Items []tidalTrack `json:"items"`
 }

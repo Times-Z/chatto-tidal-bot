@@ -139,7 +139,7 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
 	}
 
-	slog.Info("starting ffmpeg with temp file")
+	slog.Info("starting ffmpeg")
 	if err := cmd.Start(); err != nil {
 		silenceStop()
 		return fmt.Errorf("ffmpeg start: %w", err)

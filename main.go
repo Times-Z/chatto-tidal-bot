@@ -20,6 +20,8 @@ import (
 	"chatto-tidal-bot/chatto"
 )
 
+// main is the application entry point. It loads configuration, creates the bot,
+// and runs it until an OS signal (SIGINT/SIGTERM) is received.
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 

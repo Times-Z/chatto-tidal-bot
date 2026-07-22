@@ -1,3 +1,5 @@
+// Package tidal implements Tidal OAuth2 device authorization flow for
+// authenticating with a Tidal HiFi Plus account.
 package tidal
 
 import (
@@ -16,10 +18,12 @@ import (
 )
 
 const (
+	// deviceAuthURL is the Tidal OAuth2 device authorization endpoint.
 	deviceAuthURL = "https://auth.tidal.com/v1/oauth2/device_authorization"
-	tokenURL      = "https://auth.tidal.com/v1/oauth2/token"
+	// tokenURL is the Tidal OAuth2 token exchange endpoint.
+	tokenURL = "https://auth.tidal.com/v1/oauth2/token"
 
-	// defaultEncodedClient is the base64-encoded client_id;client_secret
+	// defaultEncodedClient is the base64-encoded "client_id;client_secret"
 	// used by go-tiddl and other open-source Tidal clients.
 	defaultEncodedClient = "NE4zbjZRMXg5NUxMNUs3cDtvS09YZkpXMzcxY1g2eGFaMFB5aGdHTkJkTkxsQlpkNEFLS1lvdWdNamlrPQ=="
 )
@@ -58,6 +62,7 @@ func saveToken(tokenPath string, token *oauth2.Token) {
 	}
 }
 
+// tidalScopes defines the OAuth2 scopes requested during device authorization.
 var tidalScopes = []string{"r_usr", "w_usr", "w_sub"}
 
 // deviceAuth initiates a Tidal device authorization flow, printing a URL

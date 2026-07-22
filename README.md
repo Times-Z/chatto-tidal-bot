@@ -1,20 +1,20 @@
 # Chatto Tidal Bot
 
-A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi Plus** streams in voice channels.
+A music bot for [Chatto](https://github.com/chattocorp/chatto) v0.4.14 that plays **Tidal HiFi Plus** streams in voice channels via LiveKit.
 
 ## Architecture
 
 ```
-User ──(/play Daft Punk)──▶ Chatto ──▶ Bot (polling GetRoomEvents)
-                                              │
-                                              ├──▶ Tidal API (search + FLAC audio stream)
-                                              │
-                                              ├──▶ Chatto VoiceCallService
-                                              │     (JoinCall → GetCallToken)
-                                              │
-                                              └──▶ LiveKit (publish PCM16 → Opus audio)
-                                                     │
-                                                     └──▶ Participants hear the music
+User ──(play Daft Punk)──▶ Chatto ──▶ Bot (polling GetRoomEvents)
+                                            │
+                                            ├──▶ Tidal API (search + FLAC audio stream)
+                                            │
+                                            ├──▶ Chatto VoiceCallService
+                                            │     (JoinCall → GetCallToken)
+                                            │
+                                            └──▶ LiveKit (publish PCM16 audio)
+                                                   │
+                                                   └──▶ Participants hear the music
 ```
 
 ## Prerequisites
@@ -53,17 +53,7 @@ Copy `config.example.json` → `config.json` and fill in the fields:
 **1. Create the bot account** on the Chatto server:
 
 ```bash
-# List existing users
-sudo -u chatto chatto operator user list
-
-# Set a password for the bot
-sudo -u chatto chatto operator user set-password usr_xxxxxxxxxxxx
-
-# Optionally grant permissions
-sudo -u chatto chatto operator user role add usr_xxxxxxxxxxxx moderator
-
-# Docker Compose equivalent:
-docker compose exec -u chatto chatto /chatto operator user set-password usr_xxxxxxxxxxxx
+chatto operator user create --login bot_username --password "the_password"
 ```
 
 **2. Obtain the token**:
@@ -81,7 +71,7 @@ The response contains the token in the `"token"` field. You can also grab it fro
 
 ### `bot_name` — Bot display name
 
-The bot's username on your Chatto server. This is used to recognize mentions — messages like `@tidal.bot /play ...` will trigger the bot. If omitted, defaults to `"tidal.bot"`.
+The bot's username on your Chatto server. Used to recognize mentions — messages like `@tidal.bot play ...` will trigger the bot. If omitted, defaults to `"tidal.bot"`.
 
 ### `chatto_url` — API endpoint
 
@@ -111,7 +101,7 @@ To find a room ID, simply open the room in your browser — the ID is in the URL
 
 ### `volume` — Default playback volume (0–200)
 
-Initial volume percentage. Can be changed at runtime with `/volume`. Default: `100`.
+Initial volume percentage. Can be changed at runtime with `volume`. Default: `20`.
 
 ## Usage
 
@@ -123,13 +113,15 @@ The bot joins the configured rooms and listens for chat commands. Defaults to `c
 
 | Command | Description |
 |---------|-------------|
-| `play <query/URL>` | Search or use a Tidal URL (track, album, playlist, artist) |
-| `queue <query/URL>` | Add a track to the queue |
+| `play <query>` | Search and play a track (text search only) |
+| `queue <query>` | Add a track to the queue |
 | `queue` | Show the current queue |
 | `skip` | Skip to the next track |
 | `stop` | Stop playback and clear the queue |
 | `nowplaying` | Show the currently playing track |
-| `volume <0-200>` | Show or set the volume |
+| `volume <0-200>` | Show or set the global volume |
 | `help` | Display available commands |
+
+Commands work with or without a leading `/`. When the bot is mentioned (e.g. `@tidal.bot play ...`), the `/` may be omitted entirely.
 
 The bot auto-joins the voice call when a track starts playing and stays in the call after the queue empties, ready for more tracks. Use `/stop` to leave the call.
