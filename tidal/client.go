@@ -22,13 +22,16 @@ const tidalAPIBase = "https://api.tidal.com/v1"
 // Client wraps a go-tiddl client with an authenticated HTTP client for
 // direct Tidal REST API calls (search, album/playlist/artist endpoints).
 type Client struct {
-	tiddl *tiddl.Client
-	http  *http.Client
+	tiddl   *tiddl.Client
+	http    *http.Client
+	quality tiddl.AudioQuality
 }
 
 // NewClient creates a new Tidal client, restoring a saved token if available
 // or performing device authorization flow if no token exists.
-func NewClient(ctx context.Context, tokenPath string) (*Client, error) {
+// The quality parameter sets the desired stream quality; use an empty string
+// to always pick the best available quality per track.
+func NewClient(ctx context.Context, tokenPath string, quality string) (*Client, error) {
 	token := loadSavedToken(tokenPath)
 
 	if token == nil {
@@ -64,10 +67,17 @@ func NewClient(ctx context.Context, tokenPath string) (*Client, error) {
 	httpClient := oauth2.NewClient(ctx, src)
 	httpClient.Timeout = 20 * time.Second
 
-	return &Client{
-		tiddl: tc,
-		http:  httpClient,
-	}, nil
+	c := &Client{
+		tiddl:   tc,
+		http:    httpClient,
+		quality: tiddl.AudioQuality(quality),
+	}
+
+	if quality == "" {
+		c.quality = ""
+	}
+
+	return c, nil
 }
 
 // tidalTrack is the raw JSON shape returned by Tidal REST API endpoints
@@ -174,7 +184,10 @@ func (c *Client) StreamTrack(ctx context.Context, id uint64) (*TrackStream, erro
 		return nil, fmt.Errorf("get track: %w", err)
 	}
 
-	quality := track.BestQuality()
+	quality := c.quality
+	if quality == "" {
+		quality = track.BestQuality()
+	}
 	slog.Info("streaming track", "title", track.Title, "quality", quality, "duration", track.Duration)
 	stream, err := c.tiddl.GetTrackStream(ctx, uint64(track.ID), quality, false)
 	if err != nil {

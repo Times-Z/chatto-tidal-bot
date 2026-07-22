@@ -5,7 +5,35 @@ package tidal
 import (
 	"fmt"
 	"io"
+	"strings"
+
+	"github.com/binozo/go-tiddl"
 )
+
+// Quality constants that can be used in config.json for tidal_quality.
+const (
+	QualityLow          = "LOW"
+	QualityHigh         = "HIGH"
+	QualityLossless     = "LOSSLESS"
+	QualityHiResLossless = "HI_RES_LOSSLESS"
+)
+
+// ParseQuality converts a config string to a go-tiddl AudioQuality.
+// Returns empty (meaning "best available") for unrecognized values.
+func ParseQuality(s string) tiddl.AudioQuality {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case QualityLow:
+		return tiddl.Low
+	case QualityHigh:
+		return tiddl.High
+	case QualityLossless:
+		return tiddl.Lossless
+	case QualityHiResLossless:
+		return tiddl.HiResLossless
+	default:
+		return ""
+	}
+}
 
 // SearchResult represents a track returned from a Tidal search query,
 // containing enough metadata to display and queue the track.

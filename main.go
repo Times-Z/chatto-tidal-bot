@@ -50,6 +50,8 @@ func main() {
 		Rooms:          cfg.Rooms,
 		LivekitURL:     cfg.LivekitURL,
 		TidalTokenPath: cfg.TidalTokenPath,
+		TidalQuality:   cfg.TidalQuality,
+		SampleRate:     cfg.SampleRate,
 		PollInterval:   cfg.PollInterval.ToDuration(),
 		BotName:        cfg.BotName,
 		Volume:         cfg.Volume,

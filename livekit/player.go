@@ -23,8 +23,9 @@ import (
 // It creates a local audio track, decodes input audio via ffmpeg,
 // and writes PCM frames at a real-time pace (20ms per frame).
 type Player struct {
-	room   *lksdk.Room
-	volume float64
+	room       *lksdk.Room
+	volume     float64
+	sampleRate int
 }
 
 // SetVolume sets the playback volume multiplier.
@@ -42,9 +43,10 @@ func (p *Player) SetVolume(v float64) {
 
 // Config holds connection parameters for creating a new Player.
 type Config struct {
-	URL   string
-	Token string
-	Room  string
+	URL        string
+	Token      string
+	Room       string
+	SampleRate int // audio sample rate (0 defaults to 48000)
 }
 
 // NewPlayer connects to a LiveKit room and returns a Player ready to publish audio.
@@ -65,7 +67,11 @@ func NewPlayer(cfg Config) (*Player, error) {
 	}
 
 	slog.Info("connected to livekit room", "room", cfg.Room)
-	return &Player{room: room, volume: 1.0}, nil
+	sr := cfg.SampleRate
+	if sr == 0 {
+		sr = 48000
+	}
+	return &Player{room: room, volume: 1.0, sampleRate: sr}, nil
 }
 
 // Play decodes audio from the given reader via ffmpeg and publishes it
@@ -81,7 +87,7 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 
 	logger := protoLogger.LogRLogger(stdr.New(log.Default()))
 
-	track, err := lkmedia.NewPCMLocalTrack(48000, 2, logger)
+	track, err := lkmedia.NewPCMLocalTrack(p.sampleRate, 2, logger)
 	if err != nil {
 		return fmt.Errorf("create pcm track: %w", err)
 	}
@@ -94,10 +100,9 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 
 	slog.Info("published track")
 
-	const sampleRate = 48000
 	const channels = 2
 	const frameDuration = 20 * time.Millisecond
-	samplesPerFrame := int(frameDuration.Seconds() * float64(sampleRate))
+	samplesPerFrame := int(frameDuration.Seconds() * float64(p.sampleRate))
 	frameSize := samplesPerFrame * channels * 2
 	silence := make([]int16, samplesPerFrame*channels)
 
@@ -123,7 +128,7 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 		"-i", "pipe:0",
 		"-f", "s16le",
 		"-ac", "2",
-		"-ar", "48000",
+		"-ar", fmt.Sprintf("%d", p.sampleRate),
 		"-loglevel", "warning",
 		"pipe:1",
 	)
@@ -230,7 +235,7 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 func (p *Player) PlaySilenceOnly(ctx context.Context, duration time.Duration) error {
 	logger := protoLogger.LogRLogger(stdr.New(log.Default()))
 
-	track, err := lkmedia.NewPCMLocalTrack(48000, 2, logger)
+	track, err := lkmedia.NewPCMLocalTrack(p.sampleRate, 2, logger)
 	if err != nil {
 		return fmt.Errorf("create pcm track: %w", err)
 	}
@@ -243,7 +248,9 @@ func (p *Player) PlaySilenceOnly(ctx context.Context, duration time.Duration) er
 
 	slog.Info("silence test: track published")
 
-	silence := make([]int16, 960*2)
+	const frameDuration = 20 * time.Millisecond
+	samplesPerFrame := int(frameDuration.Seconds() * float64(p.sampleRate))
+	silence := make([]int16, samplesPerFrame*2)
 	slog.Info("silence test: starting to write silence for", "duration", duration)
 
 	ticker := time.NewTicker(20 * time.Millisecond)

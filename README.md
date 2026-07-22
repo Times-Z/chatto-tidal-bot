@@ -39,6 +39,8 @@ Copy `config.example.json` → `config.json` and fill in the fields:
     "chatto_token": "cht_...",
     "livekit_url": "wss://livekit.example.com",
     "tidal_token_path": "tidal_token.json",
+    "tidal_quality": "HI_RES_LOSSLESS",
+    "sample_rate": 48000,
     "bot_name": "tidal.bot",
     "rooms": [
         "R1YR23T6P9wamep"
@@ -90,6 +92,25 @@ The token is obtained automatically on first launch via Tidal's **device authori
 ```
 
 The bot prints a URL and a code. Open the URL in a browser, enter the code, and authorize Tidal access. The token is saved to the specified file (default: `tidal_token.json`).
+
+### `tidal_quality` — Stream audio quality
+
+Controls the audio quality requested from Tidal. Valid values:
+
+| Value | Description |
+|-------|-------------|
+| `"LOW"` | Low bitrate (AAC) |
+| `"HIGH"` | High bitrate (AAC) |
+| `"LOSSLESS"` | CD-quality FLAC (16bit 44.1kHz) |
+| `"HI_RES_LOSSLESS"` | Hi-Res FLAC (up to 24bit 192kHz) |
+
+If omitted or set to an unrecognized value, the bot picks the **best quality available** per track.
+
+### `sample_rate` — Audio output sample rate
+
+Sample rate in Hz for the LiveKit PCM audio track and ffmpeg output. Must be supported by LiveKit (common values: `44100`, `48000`). Defaults to `48000`.
+
+> **Note**: LiveKit only supports 16-bit PCM audio. Setting a higher sample rate (e.g. `192000`) does not increase audible quality — the audio is always resampled to 48kHz Opus before reaching listeners. Use the default `48000` for best compatibility, or `44100` to slightly reduce bandwidth.
 
 ### `rooms` — Room IDs
 

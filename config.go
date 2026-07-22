@@ -13,6 +13,9 @@ type Config struct {
 	ChattoToken string `json:"chatto_token"`
 
 	TidalTokenPath string `json:"tidal_token_path"`
+	TidalQuality   string `json:"tidal_quality"`
+
+	SampleRate int `json:"sample_rate"`
 
 	LivekitURL string `json:"livekit_url"`
 

@@ -81,13 +81,15 @@ type Config struct {
 	Rooms          []string
 	LivekitURL     string
 	TidalTokenPath string
+	TidalQuality   string
+	SampleRate     int
 	PollInterval   time.Duration
 	BotName        string
 	Volume         int
 }
 
 func New(ctx context.Context, cfg *Config, chattoClient *chatto.Client) (*Bot, error) {
-	tidalClient, err := tidal.NewClient(ctx, cfg.TidalTokenPath)
+	tidalClient, err := tidal.NewClient(ctx, cfg.TidalTokenPath, cfg.TidalQuality)
 	if err != nil {
 		return nil, fmt.Errorf("create tidal client: %w", err)
 	}
@@ -141,17 +143,11 @@ func (b *Bot) Run(ctx context.Context) error {
 	ticker := time.NewTicker(b.cfg.PollInterval)
 	defer ticker.Stop()
 
-	pollCount := 0
-
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			pollCount++
-			if pollCount%100 == 0 {
-				b.resetSeenEvents()
-			}
 
 			for _, roomID := range b.cfg.Rooms {
 				b.pollRoom(ctx, roomID, cursors)
@@ -170,14 +166,6 @@ func (b *Bot) setPresence(ctx context.Context) {
 	if err := b.chattoClient.UpdateCustomStatus(ctx, "🎧", "Providing high-res songs"); err != nil {
 		slog.Warn("set custom status", "error", err)
 	}
-}
-
-// resetSeenEvents clears the deduplication set, allowing previously seen events
-// to be re-processed. Called periodically to avoid unbounded memory growth.
-func (b *Bot) resetSeenEvents() {
-	b.seenEventsMu.Lock()
-	b.seenEvents = make(map[string]struct{})
-	b.seenEventsMu.Unlock()
 }
 
 // pollRoom fetches new timeline events for a room, updates the cursor, and
@@ -348,9 +336,10 @@ func (b *Bot) cmdTest(ctx context.Context, roomID string) {
 		}
 
 		player, err := livekit.NewPlayer(livekit.Config{
-			URL:   b.cfg.LivekitURL,
-			Token: token.Token,
-			Room:  roomID,
+			URL:        b.cfg.LivekitURL,
+			Token:      token.Token,
+			Room:       roomID,
+			SampleRate: b.cfg.SampleRate,
 		})
 		if err != nil {
 			b.sendMessage(ctx, roomID, fmt.Sprintf("Player error: %v", err))
@@ -685,9 +674,10 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 		}
 
 		player, err = livekit.NewPlayer(livekit.Config{
-			URL:   b.cfg.LivekitURL,
-			Token: token.Token,
-			Room:  roomID,
+			URL:        b.cfg.LivekitURL,
+			Token:      token.Token,
+			Room:       roomID,
+			SampleRate: b.cfg.SampleRate,
 		})
 		if err != nil {
 			return fmt.Errorf("create livekit player: %w", err)
