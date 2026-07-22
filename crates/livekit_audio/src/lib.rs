@@ -7,6 +7,8 @@ use livekit::prelude::{LocalTrack, Room, RoomOptions};
 use livekit::track::LocalAudioTrack;
 use std::io::ErrorKind;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
@@ -32,6 +34,8 @@ pub enum Error {
     InvalidSampleRate(u32),
     #[error("ffmpeg failed: {0}")]
     FfmpegFailed(String),
+    #[error("playback cancelled")]
+    Cancelled,
 }
 
 pub struct Player {
@@ -87,6 +91,15 @@ impl Player {
     }
 
     pub async fn play_url(&mut self, stream_url: &str) -> Result<(), Error> {
+        self.play_url_until(stream_url, Arc::new(AtomicBool::new(false)))
+            .await
+    }
+
+    pub async fn play_url_until(
+        &mut self,
+        stream_url: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), Error> {
         let source = self.publish_track("music").await?;
 
         let mut ffmpeg = Command::new("ffmpeg");
@@ -126,6 +139,13 @@ impl Player {
         let mut frame_buf = vec![0_u8; samples_per_channel * 2 * 2];
 
         loop {
+            if cancel.load(Ordering::SeqCst) {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                self.unpublish_track().await;
+                return Err(Error::Cancelled);
+            }
+
             match stdout.read_exact(&mut frame_buf).await {
                 Ok(_) => {
                     let mut pcm = bytes_to_pcm16(&frame_buf);
@@ -142,7 +162,6 @@ impl Player {
                         samples_per_channel: samples_per_channel as u32,
                     };
                     source.capture_frame(&frame).await?;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
                     break;
