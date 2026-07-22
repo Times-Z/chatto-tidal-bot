@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 bot = { path = "../bot" }
+chatto = { path = "../chatto" }
 config = { path = "../config" }
 tokio.workspace = true
 tracing.workspace = true

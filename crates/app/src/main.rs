@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chatto::Client as ChattoClient;
 use config::AppConfig;
 use std::env;
 use tracing::{error, info};
@@ -21,10 +22,16 @@ async fn run() -> Result<()> {
     let cfg = AppConfig::load_from_path(&config_path)
         .with_context(|| format!("failed to load config from {config_path}"))?;
 
+    let chatto_client = ChattoClient::new(&cfg.chatto_url, &cfg.chatto_token);
+
     info!(
         rooms = ?cfg.rooms,
         poll_interval = ?cfg.poll_interval,
         "configuration loaded"
+    );
+    info!(
+        base_url = chatto_client.base_url(),
+        "chatto client initialized"
     );
     info!("chatto-bot-tidal rust runtime bootstrap complete");
 
