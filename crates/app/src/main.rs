@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use bot::{Bot, BotConfig};
 use chatto::Client as ChattoClient;
 use config::AppConfig;
 use std::env;
@@ -27,6 +28,17 @@ async fn run() -> Result<()> {
     let tidal_client = TidalClient::new(&cfg.tidal_token_path, &cfg.tidal_quality)
         .await
         .context("failed to initialize tidal client")?;
+    let bot_cfg = BotConfig {
+        rooms: cfg.rooms.clone(),
+        poll_interval: cfg.poll_interval,
+        bot_name: if cfg.bot_name.trim().is_empty() {
+            "tidal.bot".to_owned()
+        } else {
+            cfg.bot_name.clone()
+        },
+        volume: cfg.volume,
+    };
+    let bot = Bot::new(bot_cfg, chatto_client.clone(), tidal_client.clone());
 
     info!(
         rooms = ?cfg.rooms,
@@ -43,10 +55,16 @@ async fn run() -> Result<()> {
     );
     info!("chatto-bot-tidal rust runtime bootstrap complete");
 
-    tokio::signal::ctrl_c()
-        .await
-        .context("failed to listen for ctrl-c signal")?;
-    info!("shutdown signal received");
+    tokio::select! {
+        run_result = bot.run() => {
+            run_result.context("bot runtime failed")?;
+        }
+        signal_result = tokio::signal::ctrl_c() => {
+            signal_result.context("failed to listen for ctrl-c signal")?;
+            info!("shutdown signal received");
+            bot.shutdown();
+        }
+    }
 
     Ok(())
 }

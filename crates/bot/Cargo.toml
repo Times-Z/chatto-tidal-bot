@@ -5,4 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chatto = { path = "../chatto" }
+tidal = { path = "../tidal" }
 thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

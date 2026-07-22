@@ -49,6 +49,8 @@ pub enum Error {
     OAuth(String, String),
     #[error("unexpected response (status {status}): {body}")]
     UnexpectedResponse { status: StatusCode, body: String },
+    #[error("missing stream url in playback manifest")]
+    MissingStreamUrl,
     #[error("parse URL: {0}")]
     ParseUrl(url::ParseError),
     #[error("empty URL")]
@@ -310,6 +312,101 @@ impl Client {
             .collect())
     }
 
+    pub async fn get_track(&mut self, id: u64) -> Result<Track, Error> {
+        self.ensure_valid_token().await?;
+
+        let url = Url::parse_with_params(
+            &format!("{TIDAL_API_BASE}/tracks/{id}"),
+            &[("countryCode", self.country_code.clone())],
+        )
+        .map_err(Error::ParseUrl)?;
+
+        let response = self
+            .http
+            .request(Method::GET, url)
+            .header(AUTHORIZATION, self.token.auth_header())
+            .send()
+            .await
+            .map_err(Error::Http)?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(Error::Http)?;
+        if !status.is_success() {
+            return Err(Error::Api { status, body });
+        }
+
+        let item: TidalTrack = serde_json::from_str(&body).map_err(Error::ParseResponse)?;
+        let artist = artist_name(&item);
+        Ok(Track {
+            id: item.id,
+            title: item.title,
+            artist,
+            duration: item.duration,
+        })
+    }
+
+    pub async fn stream_track(&mut self, id: u64) -> Result<TrackStream, Error> {
+        self.ensure_valid_token().await?;
+
+        let quality = if self.quality.is_empty() {
+            QUALITY_HI_RES_LOSSLESS
+        } else {
+            self.quality.as_str()
+        };
+
+        let url = Url::parse_with_params(
+            &format!("{TIDAL_API_BASE}/tracks/{id}/playbackinfopostpaywall"),
+            &[
+                ("audioquality", quality.to_owned()),
+                ("playbackmode", "STREAM".to_owned()),
+                ("assetpresentation", "FULL".to_owned()),
+                ("countryCode", self.country_code.clone()),
+            ],
+        )
+        .map_err(Error::ParseUrl)?;
+
+        let response = self
+            .http
+            .request(Method::GET, url)
+            .header(AUTHORIZATION, self.token.auth_header())
+            .send()
+            .await
+            .map_err(Error::Http)?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(Error::Http)?;
+        if !status.is_success() {
+            return Err(Error::Api { status, body });
+        }
+
+        let playback: PlaybackInfoResponse =
+            serde_json::from_str(&body).map_err(Error::ParseResponse)?;
+        let manifest = decode_manifest(&playback.manifest);
+        let parsed_manifest = manifest
+            .as_deref()
+            .and_then(parse_manifest_json)
+            .unwrap_or_default();
+
+        let stream_url = parsed_manifest
+            .urls
+            .first()
+            .cloned()
+            .ok_or(Error::MissingStreamUrl)?;
+
+        Ok(TrackStream {
+            stream_url,
+            duration: playback.duration,
+            quality: if playback.audio_quality.is_empty() {
+                quality.to_owned()
+            } else {
+                playback.audio_quality
+            },
+            codec: parsed_manifest.codecs,
+            bit_depth: parsed_manifest.bit_depth,
+            sample_rate: parsed_manifest.sample_rate,
+        })
+    }
+
     async fn get_items_endpoint<T: for<'de> Deserialize<'de>>(
         &mut self,
         path: &str,
@@ -419,6 +516,30 @@ struct TidalTrack {
     artists: Vec<TidalArtist>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaybackInfoResponse {
+    #[serde(default)]
+    audio_quality: String,
+    #[serde(default)]
+    manifest: String,
+    #[serde(default)]
+    duration: i32,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct JsonManifest {
+    #[serde(default)]
+    urls: Vec<String>,
+    #[serde(default)]
+    codecs: String,
+    #[serde(default)]
+    bit_depth: i32,
+    #[serde(default)]
+    sample_rate: i32,
+}
+
 fn artist_name(t: &TidalTrack) -> String {
     if !t.artist_name.is_empty() {
         return t.artist_name.clone();
@@ -427,6 +548,23 @@ fn artist_name(t: &TidalTrack) -> String {
         .first()
         .map(|artist| artist.name.clone())
         .unwrap_or_default()
+}
+
+fn decode_manifest(encoded: &str) -> Option<String> {
+    if encoded.is_empty() {
+        return None;
+    }
+
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(encoded))
+        .ok()?;
+
+    String::from_utf8(decoded).ok()
+}
+
+fn parse_manifest_json(raw: &str) -> Option<JsonManifest> {
+    serde_json::from_str(raw).ok()
 }
 
 #[derive(Debug, Deserialize)]
@@ -763,5 +901,17 @@ mod tests {
             }],
         };
         assert_eq!(artist_name(&track), "Daft Punk");
+    }
+
+    #[test]
+    fn decode_and_parse_manifest() {
+        let manifest_json = r#"{"codecs":"flac","urls":["https://stream.example.com/audio.flac"],"bitDepth":24,"sampleRate":48000}"#;
+        let manifest_b64 = base64::engine::general_purpose::STANDARD.encode(manifest_json);
+        let decoded = decode_manifest(&manifest_b64).unwrap();
+        let parsed = parse_manifest_json(&decoded).unwrap();
+        assert_eq!(parsed.codecs, "flac");
+        assert_eq!(parsed.bit_depth, 24);
+        assert_eq!(parsed.sample_rate, 48000);
+        assert_eq!(parsed.urls.len(), 1);
     }
 }
