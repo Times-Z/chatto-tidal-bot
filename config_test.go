@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -52,5 +53,40 @@ func TestConfigValidate(t *testing.T) {
 				t.Fatalf("expected no validation error, got: %v", err)
 			}
 		})
+	}
+}
+
+func TestDurationUnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		json   string
+		want   time.Duration
+	}{
+		{`"3s"`, 3 * time.Second},
+		{`"1m"`, time.Minute},
+		{`"500ms"`, 500 * time.Millisecond},
+	}
+
+	for _, tc := range tests {
+		var d Duration
+		if err := json.Unmarshal([]byte(tc.json), &d); err != nil {
+			t.Fatalf("UnmarshalJSON(%s) error: %v", tc.json, err)
+		}
+		if d.ToDuration() != tc.want {
+			t.Fatalf("UnmarshalJSON(%s) = %v, want %v", tc.json, d.ToDuration(), tc.want)
+		}
+	}
+}
+
+func TestDurationUnmarshalJSONError(t *testing.T) {
+	var d Duration
+	if err := json.Unmarshal([]byte(`"not-a-duration"`), &d); err == nil {
+		t.Fatal("expected error for invalid duration")
+	}
+}
+
+func TestDurationToDuration(t *testing.T) {
+	d := Duration(5 * time.Second)
+	if d.ToDuration() != 5*time.Second {
+		t.Fatalf("ToDuration() = %v, want %v", d.ToDuration(), 5*time.Second)
 	}
 }
