@@ -1,6 +1,7 @@
 use crate::commands::{Command, parse_command};
 use crate::queue::{Queue, Track};
 use chatto::{Client as ChattoClient, RoomTimelineEvent};
+use livekit_audio::Player as LivekitPlayer;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +16,7 @@ pub struct BotConfig {
     pub poll_interval: Duration,
     pub bot_name: String,
     pub volume: u8,
+    pub sample_rate: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -23,12 +25,15 @@ pub enum Error {
     Chatto(#[from] chatto::Error),
     #[error("tidal error: {0}")]
     Tidal(#[from] tidal::Error),
+    #[error("livekit audio error: {0}")]
+    LivekitAudio(#[from] livekit_audio::Error),
 }
 
 #[derive(Debug, Clone)]
 struct CurrentTrack {
     track: Track,
     audio_info: String,
+    stream_url: String,
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +44,7 @@ struct RoomState {
 
 pub struct Bot {
     cfg: BotConfig,
+    livekit_url: String,
     chatto: ChattoClient,
     tidal: Arc<Mutex<TidalClient>>,
     rooms: Arc<Mutex<HashMap<String, RoomState>>>,
@@ -49,7 +55,12 @@ pub struct Bot {
 }
 
 impl Bot {
-    pub fn new(cfg: BotConfig, chatto: ChattoClient, tidal: TidalClient) -> Self {
+    pub fn new(
+        cfg: BotConfig,
+        livekit_url: String,
+        chatto: ChattoClient,
+        tidal: TidalClient,
+    ) -> Self {
         let rooms = cfg
             .rooms
             .iter()
@@ -59,6 +70,7 @@ impl Bot {
         Self {
             volume: Arc::new(Mutex::new(f64::from(cfg.volume) / 100.0)),
             cfg,
+            livekit_url,
             chatto,
             tidal: Arc::new(Mutex::new(tidal)),
             rooms: Arc::new(Mutex::new(rooms)),
@@ -197,11 +209,7 @@ impl Bot {
                 self.cmd_volume(room_id, &parsed.args).await;
             }
             Command::Test => {
-                self.send_message(
-                    room_id,
-                    "LiveKit test command kept; Rust audio publisher wiring is next.",
-                )
-                .await;
+                self.cmd_test(room_id).await;
             }
         }
 
@@ -409,22 +417,16 @@ impl Bot {
                     rs.current = Some(CurrentTrack {
                         track: track.clone(),
                         audio_info: stream.format_audio_info(),
+                        stream_url: stream.stream_url.clone(),
                     });
                 }
             }
 
-            self.send_message(
-                room_id,
-                &format!(
-                    "Prepared **{}** · *{}* (`{}`) · {}\nStream: {}",
-                    track.title,
-                    track.artist,
-                    format_duration(track.duration),
-                    stream.format_audio_info(),
-                    stream.stream_url
-                ),
-            )
-            .await;
+            if let Err(err) = self.ensure_and_play(room_id).await {
+                error!(room = room_id, error = %err, "playback failed");
+                self.send_message(room_id, &format!("Playback error: {err}"))
+                    .await;
+            }
         }
 
         Ok(())
@@ -434,6 +436,94 @@ impl Bot {
         if let Err(err) = self.chatto.create_message(room_id, text).await {
             error!(room = room_id, error = %err, "failed to send message");
         }
+    }
+
+    async fn cmd_test(&self, room_id: &str) {
+        self.send_message(room_id, "LiveKit test: publishing 10s silence...")
+            .await;
+
+        let token = match self.chatto.get_call_token(room_id).await {
+            Ok(token) => token,
+            Err(err) => {
+                self.send_message(room_id, &format!("Failed to get call token: {err}"))
+                    .await;
+                return;
+            }
+        };
+
+        let mut player = match LivekitPlayer::new(livekit_audio::Config {
+            url: self.livekit_url.clone(),
+            token: token.token,
+            room: room_id.to_owned(),
+            sample_rate: self.cfg.sample_rate,
+        })
+        .await
+        {
+            Ok(player) => player,
+            Err(err) => {
+                self.send_message(room_id, &format!("Failed to create LiveKit player: {err}"))
+                    .await;
+                return;
+            }
+        };
+
+        match player.play_silence_only(Duration::from_secs(10)).await {
+            Ok(()) => {
+                self.send_message(room_id, "LiveKit test successful (10s silence).")
+                    .await;
+            }
+            Err(err) => {
+                self.send_message(room_id, &format!("LiveKit test failed: {err}"))
+                    .await;
+            }
+        }
+
+        player.disconnect().await;
+    }
+
+    async fn ensure_and_play(&self, room_id: &str) -> Result<(), Error> {
+        let current = {
+            let rooms = self.rooms.lock().await;
+            let Some(rs) = rooms.get(room_id) else {
+                return Ok(());
+            };
+            rs.current.clone()
+        };
+
+        let Some(current) = current else {
+            return Ok(());
+        };
+
+        if !self.chatto.join_call(room_id).await? {
+            self.send_message(room_id, "Join a voice channel first, then use play.")
+                .await;
+            return Ok(());
+        }
+
+        let token = self.chatto.get_call_token(room_id).await?;
+        let target_volume = *self.volume.lock().await as f32;
+
+        let mut player = LivekitPlayer::new(livekit_audio::Config {
+            url: self.livekit_url.clone(),
+            token: token.token,
+            room: room_id.to_owned(),
+            sample_rate: self.cfg.sample_rate,
+        })
+        .await?;
+
+        player.set_volume(target_volume);
+        player.play_url(&current.stream_url).await?;
+
+        player.disconnect().await;
+
+        {
+            let mut rooms = self.rooms.lock().await;
+            if let Some(rs) = rooms.get_mut(room_id) {
+                rs.current = None;
+            }
+        }
+
+        Ok(())
     }
 }
 

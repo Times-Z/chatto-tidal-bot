@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+livekit = "0.7.53"
+libwebrtc = "0.3.42"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "process"] }

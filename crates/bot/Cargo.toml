@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 chatto = { path = "../chatto" }
 tidal = { path = "../tidal" }
+livekit_audio = { path = "../livekit_audio" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -37,8 +37,14 @@ async fn run() -> Result<()> {
             cfg.bot_name.clone()
         },
         volume: cfg.volume,
+        sample_rate: cfg.sample_rate,
     };
-    let bot = Bot::new(bot_cfg, chatto_client.clone(), tidal_client.clone());
+    let bot = Bot::new(
+        bot_cfg,
+        cfg.livekit_url.clone(),
+        chatto_client.clone(),
+        tidal_client.clone(),
+    );
 
     info!(
         rooms = ?cfg.rooms,
