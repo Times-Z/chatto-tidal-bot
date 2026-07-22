@@ -110,7 +110,7 @@ func (c *Client) doRPC(ctx context.Context, service, method string, req, resp an
 	if err != nil {
 		return fmt.Errorf("http request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {

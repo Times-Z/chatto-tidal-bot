@@ -85,7 +85,7 @@ func NewPlayer(cfg Config) (*Player, error) {
 // A silence frame is written every 20ms until the first audio frame arrives
 // to prevent the LiveKit track from being dropped.
 func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) error {
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	logger := protoLogger.LogRLogger(stdr.New(log.Default()))
 
@@ -185,9 +185,9 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 		select {
 		case <-ctx.Done():
 			slog.Warn("playback context cancelled", "error", ctx.Err())
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 			silenceStop()
-			track.Close()
+			_ = track.Close()
 			if onDone != nil {
 				onDone()
 			}
@@ -196,11 +196,11 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 			sample, ok := <-frames
 			if !ok {
 				silenceStop()
-				cmd.Wait()
+				_ = cmd.Wait()
 				if cmd.ProcessState != nil && !cmd.ProcessState.Success() {
 					slog.Warn("ffmpeg exit error", "stderr", stderrBuf.String())
 				}
-				track.Close()
+				_ = track.Close()
 				if onDone != nil {
 					onDone()
 				}
@@ -215,8 +215,8 @@ func (p *Player) Play(ctx context.Context, reader io.ReadCloser, onDone func()) 
 			if err := track.WriteSample(sample); err != nil {
 				slog.Warn("write sample error", "error", err)
 				silenceStop()
-				cmd.Process.Kill()
-				track.Close()
+				_ = cmd.Process.Kill()
+				_ = track.Close()
 				if onDone != nil {
 					onDone()
 				}
@@ -263,16 +263,16 @@ func (p *Player) PlaySilenceOnly(ctx context.Context, duration time.Duration) er
 		select {
 		case <-ctx.Done():
 			slog.Warn("silence test: context done", "error", ctx.Err())
-			track.Close()
+			_ = track.Close()
 			return ctx.Err()
 		case <-timeout:
 			slog.Info("silence test: duration elapsed")
-			track.Close()
+			_ = track.Close()
 			return nil
 		case <-ticker.C:
 			if err := track.WriteSample(silence); err != nil {
 				slog.Warn("silence test: write sample error", "error", err)
-				track.Close()
+				_ = track.Close()
 				return fmt.Errorf("write silence: %w", err)
 			}
 		}

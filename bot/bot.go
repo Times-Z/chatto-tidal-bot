@@ -13,19 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"chatto-tidal-bot/chatto"
 	"chatto-tidal-bot/livekit"
 	"chatto-tidal-bot/tidal"
 )
-
-// artistSuffix returns " by <artist>" when artist is non-empty, or an empty string otherwise.
-func artistSuffix(artist string) string {
-	if artist == "" {
-		return ""
-	}
-	return " by " + artist
-}
 
 // formatDuration converts seconds to a "m:ss" string.
 func formatDuration(seconds int) string {
@@ -37,6 +30,40 @@ func formatDuration(seconds int) string {
 // formatTrack returns a Markdown-formatted track string with title and duration.
 func formatTrack(t Track) string {
 	return fmt.Sprintf("**%s** — `%s`", t.Title, formatDuration(t.Duration))
+}
+
+func card(title, body string) string {
+	const width = 52
+	inner := width - 4
+	var b strings.Builder
+
+	b.WriteString("┌─ ")
+	b.WriteString(title)
+	b.WriteString(" ─")
+	tl := utf8.RuneCountInString(title) + 4
+	for i := tl; i < width-1; i++ {
+		b.WriteString("─")
+	}
+	b.WriteString("┐\n")
+
+	for _, line := range strings.Split(body, "\n") {
+		b.WriteString("│  ")
+		b.WriteString(line)
+		rl := utf8.RuneCountInString(line)
+		if rl < inner {
+			for i := 0; i < inner-rl; i++ {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString("  │\n")
+	}
+
+	b.WriteString("└")
+	for i := 0; i < width-2; i++ {
+		b.WriteString("─")
+	}
+	b.WriteString("┘")
+	return b.String()
 }
 
 // Bot is the main bot instance. It manages all rooms, each with its own
@@ -137,18 +164,22 @@ func (b *Bot) Run(ctx context.Context) error {
 
 	cursors := make(map[string]string)
 
-	ticker := time.NewTicker(b.cfg.PollInterval)
-	defer ticker.Stop()
+	pollTick := time.NewTicker(b.cfg.PollInterval)
+	defer pollTick.Stop()
+
+	presenceTick := time.NewTicker(45 * time.Second)
+	defer presenceTick.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-
+		case <-pollTick.C:
 			for _, roomID := range b.cfg.Rooms {
 				b.pollRoom(ctx, roomID, cursors)
 			}
+		case <-presenceTick.C:
+			b.setPresence(ctx)
 		}
 
 		b.autoStartPlayback(ctx)
@@ -307,28 +338,36 @@ func (b *Bot) handleMessage(ctx context.Context, roomID string, msg chatto.Messa
 
 // cmdHelp sends a list of available commands to the room.
 func (b *Bot) cmdHelp(ctx context.Context, roomID string) {
-	b.sendMessage(ctx, roomID, "**Tidal Bot** — Commands\n\n`play <track>` — Play a track\n`queue <track>` — Add to queue\n`queue` — View queue\n`skip` — Skip to next\n`stop` — Stop & clear queue\n`nowplaying` — Now playing\n`volume <0-200>` — Set volume\n`help` — This message")
+	b.sendMessage(ctx, roomID, card("Tidal Bot",
+		"`play <track>` — Queue and play\n"+
+		"`queue <track>` — Add to queue\n"+
+		"`queue` — View queue\n"+
+		"`skip` — Skip current\n"+
+		"`stop` — Stop and clear\n"+
+		"`nowplaying` — Show current\n"+
+		"`volume <0-200>` — Adjust volume\n"+
+		"`help` — This message"))
 }
 
 // cmdTest joins the voice call, publishes 10 seconds of silence, then leaves.
 // It verifies LiveKit connectivity without playing actual audio.
 func (b *Bot) cmdTest(ctx context.Context, roomID string) {
-	b.sendMessage(ctx, roomID, "Testing LiveKit connection...")
+	b.sendMessage(ctx, roomID, card("LiveKit Test", "Testing connection..."))
 
 	go func() {
 		joined, err := b.chattoClient.JoinCall(ctx, roomID)
 		if err != nil {
-			b.sendMessage(ctx, roomID, fmt.Sprintf("Join call error: %v", err))
+			b.sendMessage(ctx, roomID, card("Error", fmt.Sprintf("Join call: %v", err)))
 			return
 		}
 		if !joined {
-			b.sendMessage(ctx, roomID, "Join a voice channel first.")
+			b.sendMessage(ctx, roomID, card("Voice Required", "Join a voice channel first."))
 			return
 		}
 
 		token, err := b.chattoClient.GetCallToken(ctx, roomID)
 		if err != nil {
-			b.sendMessage(ctx, roomID, fmt.Sprintf("Token error: %v", err))
+			b.sendMessage(ctx, roomID, card("Token Error", fmt.Sprintf("%v", err)))
 			return
 		}
 
@@ -339,7 +378,7 @@ func (b *Bot) cmdTest(ctx context.Context, roomID string) {
 			SampleRate: b.cfg.SampleRate,
 		})
 		if err != nil {
-			b.sendMessage(ctx, roomID, fmt.Sprintf("Player error: %v", err))
+			b.sendMessage(ctx, roomID, card("Player Error", fmt.Sprintf("%v", err)))
 			return
 		}
 
@@ -347,9 +386,9 @@ func (b *Bot) cmdTest(ctx context.Context, roomID string) {
 		player.Disconnect()
 
 		if err != nil {
-			b.sendMessage(ctx, roomID, fmt.Sprintf("Test failed: %v", err))
+			b.sendMessage(ctx, roomID, card("Test Failed", fmt.Sprintf("%v", err)))
 		} else {
-			b.sendMessage(ctx, roomID, "LiveKit connection OK · 10s silence")
+			b.sendMessage(ctx, roomID, card("LiveKit Test", "Connection OK · 10s silence"))
 		}
 	}()
 }
@@ -371,28 +410,29 @@ func (b *Bot) resolveTracks(ctx context.Context, query string) ([]tidal.SearchRe
 // If multiple results are found they are shown and the first is queued.
 func (b *Bot) cmdPlay(ctx context.Context, roomID, actorID, query string) {
 	if query == "" {
-		b.sendMessage(ctx, roomID, "Usage: `play <track name>` — e.g. `play Daft Punk Around the World`")
+		b.sendMessage(ctx, roomID, card("Usage",
+			"`play <track name>`\n\nExample: `play Daft Punk Around the World`"))
 		return
 	}
 
 	tracks, err := b.resolveTracks(ctx, query)
 	if err != nil {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("Error: %v", err))
+		b.sendMessage(ctx, roomID, card("Error", fmt.Sprintf("%v", err)))
 		return
 	}
 	if len(tracks) == 0 {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("No results for: %s", query))
+		b.sendMessage(ctx, roomID, card("No Results", fmt.Sprintf("No matches for **%s**", query)))
 		return
 	}
 
 	if len(tracks) > 1 {
-		var msg strings.Builder
-		msg.WriteString(fmt.Sprintf("Top results for \"**%s**\":\n", query))
+		var body strings.Builder
+		fmt.Fprintf(&body, "Top results for **%s**\n\n", query)
 		for i, r := range tracks {
-			msg.WriteString(fmt.Sprintf("`%d.` %s\n", i+1, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration})))
+			fmt.Fprintf(&body, "`%d.` %s\n", i+1, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration}))
 		}
-		msg.WriteString(fmt.Sprintf("\nPlaying first result: %s", formatTrack(Track{Title: tracks[0].Title, Artist: tracks[0].Artist, Duration: tracks[0].Duration})))
-		b.sendMessage(ctx, roomID, msg.String())
+		fmt.Fprintf(&body, "\nPlaying first result: %s", formatTrack(Track{Title: tracks[0].Title, Artist: tracks[0].Artist, Duration: tracks[0].Duration}))
+		b.sendMessage(ctx, roomID, card("Results", body.String()))
 	}
 	tracks = tracks[:1]
 
@@ -409,11 +449,11 @@ func (b *Bot) cmdQueue(ctx context.Context, roomID, actorID, query string) {
 
 	tracks, err := b.resolveTracks(ctx, query)
 	if err != nil {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("Error: %v", err))
+		b.sendMessage(ctx, roomID, card("Error", fmt.Sprintf("%v", err)))
 		return
 	}
 	if len(tracks) == 0 {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("No results for: %s", query))
+		b.sendMessage(ctx, roomID, card("No Results", fmt.Sprintf("No matches for **%s**", query)))
 		return
 	}
 
@@ -425,21 +465,45 @@ func (b *Bot) cmdQueue(ctx context.Context, roomID, actorID, query string) {
 // printQueue sends the current queue listing (with total duration) to the room.
 func (b *Bot) printQueue(ctx context.Context, roomID string) {
 	rs := b.room(roomID)
-	tracks := rs.queue.List()
-	if rs.queue.Len() == 0 {
-		b.sendMessage(ctx, roomID, "Queue is empty.")
+
+	rs.mu.Lock()
+	running := rs.running
+	rs.mu.Unlock()
+
+	current, hasCurrent := rs.queue.Current()
+	remaining := rs.queue.List()
+
+	if !running || !hasCurrent {
+		if len(remaining) == 0 {
+			b.sendMessage(ctx, roomID, card("Queue", "Queue is empty."))
+			return
+		}
+		total := 0
+		for _, t := range remaining {
+			total += t.Duration
+		}
+		var body strings.Builder
+		fmt.Fprintf(&body, "%d tracks · %s\n\n", len(remaining), formatDuration(total))
+		for i, t := range remaining {
+			fmt.Fprintf(&body, "`%d.` %s\n", i+1, formatTrack(t))
+		}
+		b.sendMessage(ctx, roomID, card("Queue", body.String()))
 		return
 	}
-	total := 0
-	for _, t := range tracks {
+
+	total := current.Duration
+	for _, t := range remaining {
 		total += t.Duration
 	}
-	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("**Queue** · %d tracks · `%s`\n", len(tracks), formatDuration(total)))
-	for i, t := range tracks {
-		msg.WriteString(fmt.Sprintf("`%d.` %s\n", i+1, formatTrack(t)))
+	trackCount := len(remaining) + 1
+
+	var body strings.Builder
+	fmt.Fprintf(&body, "%d tracks · %s\n\n", trackCount, formatDuration(total))
+	fmt.Fprintf(&body, "-> %s  (playing)\n\n", formatTrack(current))
+	for i, t := range remaining {
+		fmt.Fprintf(&body, "`%d.` %s\n", i+1, formatTrack(t))
 	}
-	b.sendMessage(ctx, roomID, msg.String())
+	b.sendMessage(ctx, roomID, card("Queue", body.String()))
 }
 
 // addTracksToQueue appends one or more tracks to the room's queue and sends
@@ -459,24 +523,28 @@ func (b *Bot) addTracksToQueue(ctx context.Context, roomID, actorID string, trac
 
 	if len(tracks) == 1 {
 		r := tracks[0]
-		pos := rs.queue.Len()
+		pos := rs.queue.TotalLen()
 
+		list := rs.queue.List()
 		total := 0
-		for _, t := range rs.queue.List() {
+		for _, t := range list {
 			total += t.Duration
 		}
 		eta := ""
 		if pos > 1 {
-			eta = fmt.Sprintf("· ~%s until play", formatDuration(total))
+			wait := total - r.Duration
+			if wait > 0 {
+				eta = fmt.Sprintf("· ~%s until play", formatDuration(wait))
+			}
 		}
 
-		msg := fmt.Sprintf("Added #**%d** — %s", pos, formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration}))
+		body := fmt.Sprintf("%s\n#%d", formatTrack(Track{Title: r.Title, Artist: r.Artist, Duration: r.Duration}), pos)
 		if eta != "" {
-			msg += " " + eta
+			body += " " + eta
 		}
-		b.sendMessage(ctx, roomID, msg)
+		b.sendMessage(ctx, roomID, card("Added", body))
 	} else {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("Added **%d** tracks to queue", len(tracks)))
+		b.sendMessage(ctx, roomID, card("Added", fmt.Sprintf("Added **%d** tracks to queue", len(tracks))))
 	}
 }
 
@@ -491,9 +559,9 @@ func (b *Bot) cmdSkip(ctx context.Context, roomID string) {
 	}
 	rs.mu.Unlock()
 	if cur.Title != "" {
-		b.sendMessage(ctx, roomID, fmt.Sprintf("Skipped — %s", formatTrack(cur)))
+		b.sendMessage(ctx, roomID, card("Skipped", formatTrack(cur)))
 	} else {
-		b.sendMessage(ctx, roomID, "Skipped")
+		b.sendMessage(ctx, roomID, card("Skipped", "Nothing playing."))
 	}
 }
 
@@ -517,7 +585,7 @@ func (b *Bot) cmdStop(ctx context.Context, roomID string) {
 	}
 
 	b.leaveCall(ctx, roomID)
-	b.sendMessage(ctx, roomID, fmt.Sprintf("Stopped · %d track(s) removed", n))
+	b.sendMessage(ctx, roomID, card("Stopped", fmt.Sprintf("%d track(s) removed from queue", n)))
 }
 
 // cmdNowPlaying sends the currently playing track title, artist, elapsed time,
@@ -526,7 +594,7 @@ func (b *Bot) cmdNowPlaying(ctx context.Context, roomID string) {
 	rs := b.room(roomID)
 	track, ok := rs.queue.Current()
 	if !ok {
-		b.sendMessage(ctx, roomID, "Nothing playing right now.")
+		b.sendMessage(ctx, roomID, card("Now Playing", "Nothing playing right now."))
 		return
 	}
 	remaining := rs.queue.Len()
@@ -536,11 +604,11 @@ func (b *Bot) cmdNowPlaying(ctx context.Context, roomID string) {
 	audioInfo := rs.trackAudioInfo
 	rs.mu.Unlock()
 
-	msg := fmt.Sprintf("Now playing : %s%s [%s/%s] · %s", track.Title, artistSuffix(track.Artist), formatDuration(elapsed), formatDuration(track.Duration), audioInfo)
+	body := fmt.Sprintf("**%s** · *%s*\n%s / %s · %s", track.Title, track.Artist, formatDuration(elapsed), formatDuration(track.Duration), audioInfo)
 	if remaining > 1 {
-		msg += fmt.Sprintf("\n`%d` more in queue", remaining-1)
+		body += fmt.Sprintf("\n\n*%d more in queue*", remaining-1)
 	}
-	b.sendMessage(ctx, roomID, msg)
+	b.sendMessage(ctx, roomID, card("Now Playing", body))
 }
 
 // cmdVolume shows the current volume setting, or sets it globally (0–200%)
@@ -550,13 +618,13 @@ func (b *Bot) cmdVolume(ctx context.Context, roomID, args string) {
 		b.mu.Lock()
 		v := b.volume
 		b.mu.Unlock()
-		b.sendMessage(ctx, roomID, fmt.Sprintf("Volume: `%.0f%%`", v*100))
+		b.sendMessage(ctx, roomID, card("Volume", fmt.Sprintf("Current: `%.0f%%`", v*100)))
 		return
 	}
 
 	pct, err := strconv.Atoi(args)
 	if err != nil || pct < 0 || pct > 200 {
-		b.sendMessage(ctx, roomID, "Usage: `volume <0-200>` — set volume percentage")
+		b.sendMessage(ctx, roomID, card("Volume", "Usage: `volume <0-200>`"))
 		return
 	}
 
@@ -571,7 +639,7 @@ func (b *Bot) cmdVolume(ctx context.Context, roomID, args string) {
 		rs.mu.Unlock()
 	}
 	b.mu.Unlock()
-	b.sendMessage(ctx, roomID, fmt.Sprintf("Volume set to `%d%%`", pct))
+	b.sendMessage(ctx, roomID, card("Volume", fmt.Sprintf("Set to `%d%%`", pct)))
 }
 
 // startPlayback begins a goroutine that iterates through the room's queue,
@@ -610,7 +678,7 @@ func (b *Bot) startPlayback(ctx context.Context, roomID string) {
 
 			if err != nil && err != context.Canceled {
 				slog.Error("play track error", "error", err)
-				b.sendMessage(playLoopCtx, roomID, fmt.Sprintf("Playback error: %v", err))
+				b.sendMessage(playLoopCtx, roomID, card("Playback Error", fmt.Sprintf("%v", err)))
 			}
 		}
 	}()
@@ -633,7 +701,7 @@ func (b *Bot) endPlayback(ctx context.Context, roomID string) {
 		rs.mu.Unlock()
 	}
 
-	b.sendMessage(ctx, roomID, "Queue empty — add more with `play`")
+	b.sendMessage(ctx, roomID, card("Queue Empty", "Add more with `play`"))
 }
 
 // playTrack streams a track from Tidal and publishes it to LiveKit via ffmpeg.
@@ -647,11 +715,11 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 	rs.trackStartTime = time.Now()
 	rs.mu.Unlock()
 
-	msg := fmt.Sprintf("Now playing : %s%s [0:00/%s] · %s", track.Title, artistSuffix(track.Artist), formatDuration(track.Duration), rs.trackAudioInfo)
+	body := fmt.Sprintf("**%s** · *%s*\n`0:00` / %s · %s", track.Title, track.Artist, formatDuration(track.Duration), rs.trackAudioInfo)
 	if remaining > 0 {
-		msg += fmt.Sprintf("\n`%d` more in queue", remaining)
+		body += fmt.Sprintf("\n\n*%d more in queue*", remaining)
 	}
-	b.sendMessage(ctx, roomID, msg)
+	b.sendMessage(ctx, roomID, card("Now Playing", body))
 
 	// Ensure we have a LiveKit player connected.
 	rs.mu.Lock()
@@ -664,7 +732,7 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 			return fmt.Errorf("join call: %w", err)
 		}
 		if !joined {
-			b.sendMessage(ctx, roomID, "Join a voice channel first and try again.")
+			b.sendMessage(ctx, roomID, card("Voice Required", "Join a voice channel first and try again."))
 			return nil
 		}
 
@@ -694,7 +762,7 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 	if err != nil {
 		return fmt.Errorf("stream track: %w", err)
 	}
-	defer stream.Reader.Close()
+	defer func() { _ = stream.Reader.Close() }()
 
 	rs.mu.Lock()
 	rs.trackAudioInfo = stream.FormatAudioInfo()
@@ -749,5 +817,5 @@ func (b *Bot) Shutdown() {
 		}
 		rs.mu.Unlock()
 	}
-	b.tidalClient.Close()
+	_ = b.tidalClient.Close()
 }

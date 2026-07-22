@@ -6,54 +6,54 @@ import (
 
 func TestFormatAudioInfo(t *testing.T) {
 	tests := []struct {
-		name  string
+		name   string
 		stream TrackStream
-		want  string
+		want   string
 	}{
 		{
-			name: "FLAC hi-res",
+			name:   "FLAC hi-res",
 			stream: TrackStream{Quality: "HI_RES_LOSSLESS", Codec: "flac", BitDepth: 24, SampleRate: 48000},
-			want: "FLAC 24bit 48kHz",
+			want:   "FLAC 24bit 48kHz",
 		},
 		{
-			name: "FLAC CD",
+			name:   "FLAC CD",
 			stream: TrackStream{Quality: "LOSSLESS", Codec: "flac", BitDepth: 16, SampleRate: 44100},
-			want: "FLAC 16bit 44kHz",
+			want:   "FLAC 16bit 44kHz",
 		},
 		{
-			name: "AAC-LC",
+			name:   "AAC-LC",
 			stream: TrackStream{Quality: "HIGH", Codec: "mp4a.40.2", BitDepth: 16, SampleRate: 44100},
-			want: "AAC-LC 16bit 44kHz",
+			want:   "AAC-LC 16bit 44kHz",
 		},
 		{
-			name: "HE-AAC",
+			name:   "HE-AAC",
 			stream: TrackStream{Quality: "LOW", Codec: "mp4a.40.5", BitDepth: 16, SampleRate: 44100},
-			want: "HE-AAC 16bit 44kHz",
+			want:   "HE-AAC 16bit 44kHz",
 		},
 		{
-			name: "AAC-LD",
+			name:   "AAC-LD",
 			stream: TrackStream{Quality: "HIGH", Codec: "mp4a.40.34", BitDepth: 16, SampleRate: 48000},
-			want: "AAC-LD 16bit 48kHz",
+			want:   "AAC-LD 16bit 48kHz",
 		},
 		{
-			name: "MPEG-H",
+			name:   "MPEG-H",
 			stream: TrackStream{Quality: "HI_RES_LOSSLESS", Codec: "mha1", BitDepth: 24, SampleRate: 96000},
-			want: "MPEG-H 24bit 96kHz",
+			want:   "MPEG-H 24bit 96kHz",
 		},
 		{
-			name: "unknown codec falls back to quality",
+			name:   "unknown codec falls back to quality",
 			stream: TrackStream{Quality: "LOSSLESS", Codec: "unknown", BitDepth: 0, SampleRate: 0},
-			want: "LOSSLESS",
+			want:   "LOSSLESS",
 		},
 		{
-			name: "no codec falls back to quality",
+			name:   "no codec falls back to quality",
 			stream: TrackStream{Quality: "HIGH", Codec: "", BitDepth: 0, SampleRate: 0},
-			want: "HIGH",
+			want:   "HIGH",
 		},
 		{
-			name: "sample rate below 1000 shows Hz",
+			name:   "sample rate below 1000 shows Hz",
 			stream: TrackStream{Quality: "LOW", Codec: "flac", BitDepth: 16, SampleRate: 800},
-			want: "FLAC 16bit 800Hz",
+			want:   "FLAC 16bit 800Hz",
 		},
 	}
 

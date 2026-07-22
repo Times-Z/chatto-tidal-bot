@@ -5,23 +5,6 @@ import (
 	"time"
 )
 
-func TestArtistSuffix(t *testing.T) {
-	tests := []struct {
-		artist string
-		want   string
-	}{
-		{"Daft Punk", " by Daft Punk"},
-		{"", ""},
-	}
-
-	for _, tc := range tests {
-		got := artistSuffix(tc.artist)
-		if got != tc.want {
-			t.Fatalf("artistSuffix(%q) = %q, want %q", tc.artist, got, tc.want)
-		}
-	}
-}
-
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		seconds int
@@ -74,10 +57,10 @@ func TestParseEventTime(t *testing.T) {
 
 func TestStripMention(t *testing.T) {
 	tests := []struct {
-		body         string
-		botName      string
-		wantBody     string
-		wantMention  bool
+		body        string
+		botName     string
+		wantBody    string
+		wantMention bool
 	}{
 		{"@tidal.bot play bad", "tidal.bot", "play bad", true},
 		{"@Tidal.Bot play bad", "tidal.bot", "play bad", true},

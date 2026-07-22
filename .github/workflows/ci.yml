@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+    tags: ["*"]
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  packages: read
+
+jobs:
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install native audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsoxr-dev libopusfile-dev
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: latest
+
+  build:
+    name: Build and Test
+    needs: [static-analysis]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install native audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsoxr-dev libopusfile-dev
+
+      - name: Test without CGO
+        run: CGO_ENABLED=0 go test . ./bot ./chatto ./tidal ./livekit -v -count=1
+
+      - name: Test with CGO
+        run: go test . ./bot ./chatto ./tidal ./livekit -v -count=1
+
+      - name: Build binary
+        run: go build -o chatto-tidal-bot .
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chatto-tidal-bot-linux-amd64
+          path: chatto-tidal-bot
+          include-hidden-files: false

@@ -106,7 +106,7 @@ func main() {
 	}
 
 	slog.Info("disconnecting")
-	track.Close()
+	_ = track.Close()
 	room.Disconnect()
 	slog.Info("done")
 	time.Sleep(1 * time.Second)

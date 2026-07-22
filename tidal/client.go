@@ -123,7 +123,7 @@ func (c *Client) Search(ctx context.Context, query string, limit int) ([]SearchR
 	if err != nil {
 		return nil, fmt.Errorf("search request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -232,7 +232,7 @@ func (c *Client) GetAlbumTracks(ctx context.Context, albumID uint64) ([]SearchRe
 	if err != nil {
 		return nil, fmt.Errorf("album items request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -278,7 +278,7 @@ func (c *Client) GetPlaylistTracks(ctx context.Context, playlistID string) ([]Se
 	if err != nil {
 		return nil, fmt.Errorf("playlist items request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -324,7 +324,7 @@ func (c *Client) GetArtistTopTracks(ctx context.Context, artistID uint64) ([]Sea
 	if err != nil {
 		return nil, fmt.Errorf("artist top tracks request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -69,6 +69,14 @@ func (q *Queue) Skip() bool {
 	return true
 }
 
+// TotalLen returns the total number of tracks ever added, including those
+// already consumed by Next(). Unlike Len(), this is not relative to the cursor.
+func (q *Queue) TotalLen() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.tracks)
+}
+
 // Clear removes all tracks from the queue and resets the cursor.
 func (q *Queue) Clear() {
 	q.mu.Lock()

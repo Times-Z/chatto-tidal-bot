@@ -94,7 +94,7 @@ func deviceAuth(ctx context.Context, tokenPath string) (*oauth2.Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initiate device auth: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -155,10 +155,10 @@ func pollDeviceAuth(ctx context.Context, httpClient *http.Client, cfg *oauth2.Co
 				Scope        string `json:"scope"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return nil, fmt.Errorf("decode token response: %w", err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			expiry := time.Time{}
 			if tokenResp.ExpiresIn > 0 {
@@ -174,13 +174,13 @@ func pollDeviceAuth(ctx context.Context, httpClient *http.Client, cfg *oauth2.Co
 		}
 
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		var errResp struct {
 			Error            string `json:"error"`
 			ErrorDescription string `json:"error_description"`
 		}
-		json.Unmarshal(body, &errResp)
+		_ = json.Unmarshal(body, &errResp)
 
 		switch errResp.Error {
 		case "authorization_pending":

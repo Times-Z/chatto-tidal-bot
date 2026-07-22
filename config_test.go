@@ -58,8 +58,8 @@ func TestConfigValidate(t *testing.T) {
 
 func TestDurationUnmarshalJSON(t *testing.T) {
 	tests := []struct {
-		json   string
-		want   time.Duration
+		json string
+		want time.Duration
 	}{
 		{`"3s"`, 3 * time.Second},
 		{`"1m"`, time.Minute},
