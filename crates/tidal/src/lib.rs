@@ -73,6 +73,8 @@ pub struct OAuthToken {
     pub refresh_token: Option<String>,
     #[serde(rename = "expires_at", default)]
     pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub scope: String,
 }
 
 impl OAuthToken {
@@ -453,16 +455,16 @@ impl Client {
         };
 
         let (client_id, client_secret) = default_credentials()?;
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}&scope=r_usr+w_usr+w_sub",
+            refresh_token, client_id
+        );
         let response = self
             .http
             .request(Method::POST, TOKEN_URL)
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .basic_auth(client_id.clone(), Some(client_secret))
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token.as_str()),
-                ("client_id", client_id.as_str()),
-            ])
+            .basic_auth(client_id, Some(client_secret))
+            .body(body)
             .send()
             .await
             .map_err(Error::Http)?;
@@ -585,6 +587,8 @@ struct TokenResponse {
     expires_in: Option<i64>,
     #[serde(default = "default_bearer")]
     token_type: String,
+    #[serde(default)]
+    scope: String,
 }
 
 fn default_bearer() -> String {
@@ -685,13 +689,11 @@ fn default_credentials() -> Result<(String, String), Error> {
 async fn device_auth(http: &HttpClient, token_path: &Path) -> Result<OAuthToken, Error> {
     let (client_id, client_secret) = default_credentials()?;
 
+    let body = format!("client_id={}&scope=r_usr+w_usr+w_sub", client_id);
     let response = http
         .request(Method::POST, DEVICE_AUTH_URL)
         .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .form(&[
-            ("client_id", client_id.as_str()),
-            ("scope", "r_usr+w_usr+w_sub"),
-        ])
+        .body(body)
         .send()
         .await
         .map_err(Error::Http)?;
@@ -738,15 +740,15 @@ async fn poll_device_auth(
     interval_sec: u64,
 ) -> Result<OAuthToken, Error> {
     loop {
+        let body = format!(
+            "client_id={}&device_code={}&grant_type=urn:ietf:params:oauth:grant-type:device_code&scope=r_usr+w_usr+w_sub",
+            client_id, device_code
+        );
         let response = http
             .request(Method::POST, TOKEN_URL)
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .basic_auth(client_id, Some(client_secret))
-            .form(&[
-                ("client_id", client_id),
-                ("device_code", device_code),
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ])
+            .body(body)
             .send()
             .await
             .map_err(Error::Http)?;
@@ -785,6 +787,7 @@ fn token_from_response(resp: TokenResponse, fallback_refresh: Option<String>) ->
         token_type: resp.token_type,
         refresh_token: resp.refresh_token.or(fallback_refresh),
         expires_at,
+        scope: resp.scope,
     }
 }
 

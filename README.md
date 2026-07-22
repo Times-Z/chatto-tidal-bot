@@ -1,6 +1,6 @@
 # Chatto Tidal Bot
 
-A music bot for [Chatto](https://github.com/chattocorp/chatto) v0.4.14 that plays **Tidal HiFi Plus** streams in voice channels via LiveKit.
+A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi Plus** streams in voice channels via LiveKit.
 
 ## Architecture
 
@@ -41,25 +41,8 @@ This project uses [Task](https://taskfile.dev) (task.dev) for common developer w
 task --list
 task fmt
 task test
-task build:go
-task test:go
+task dev
 ```
-
-Go tasks are still available during migration (`task fmt:go`, `task test:nocgo`).
-
-### Build Requirements
-
-The default build (CGO enabled) requires native audio libraries used by LiveKit/media-sdk,
-including `soxr` and `opusfile`.
-
-If these system dependencies are not available, you can still run most unit tests using:
-
-```bash
-task test:nocgo
-```
-
-In this mode, the `livekit` package is compiled with a no-CGO stub player that returns a
-clear runtime error when audio publishing is attempted.
 
 ## Configuration
 

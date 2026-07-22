@@ -11,3 +11,4 @@ livekit_audio = { path = "../livekit_audio" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+chrono.workspace = true

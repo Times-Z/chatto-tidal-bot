@@ -1,6 +1,7 @@
 use crate::commands::{Command, parse_command};
 use crate::queue::{Queue, Track};
 use chatto::{Client as ChattoClient, RoomTimelineEvent};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use livekit_audio::Player as LivekitPlayer;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -37,12 +38,25 @@ struct CurrentTrack {
     stream_url: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RoomState {
     queue: Queue,
     current: Option<CurrentTrack>,
     playback_task: Option<JoinHandle<PlaybackTaskResult>>,
     playback_cancel: Option<Arc<AtomicBool>>,
+    cursor: String,
+}
+
+impl Default for RoomState {
+    fn default() -> Self {
+        Self {
+            queue: Queue::default(),
+            current: None,
+            playback_task: None,
+            playback_cancel: None,
+            cursor: String::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -59,10 +73,11 @@ pub struct Bot {
     chatto: ChattoClient,
     tidal: Arc<Mutex<TidalClient>>,
     rooms: Arc<Mutex<HashMap<String, RoomState>>>,
-    cursors: Arc<Mutex<HashMap<String, String>>>,
-    seen_events: Arc<Mutex<HashSet<String>>>,
     volume: Arc<Mutex<f64>>,
     shutdown: Arc<AtomicBool>,
+    started_at: DateTime<Utc>,
+    seen_events: Arc<Mutex<HashSet<String>>>,
+    bot_user_id: Arc<Mutex<Option<String>>>,
 }
 
 impl Bot {
@@ -85,9 +100,10 @@ impl Bot {
             chatto,
             tidal: Arc::new(Mutex::new(tidal)),
             rooms: Arc::new(Mutex::new(rooms)),
-            cursors: Arc::new(Mutex::new(HashMap::new())),
-            seen_events: Arc::new(Mutex::new(HashSet::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
+            started_at: Utc::now(),
+            seen_events: Arc::new(Mutex::new(HashSet::new())),
+            bot_user_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -97,6 +113,16 @@ impl Bot {
 
     pub async fn run(&self) -> Result<(), Error> {
         self.set_presence().await;
+
+        match self.chatto.get_viewer().await {
+            Ok(id) => {
+                let mut uid = self.bot_user_id.lock().await;
+                *uid = Some(id);
+            }
+            Err(err) => {
+                warn!(error = %err, "could not get bot user ID, own messages will not be filtered");
+            }
+        }
 
         let mut poll_tick = tokio::time::interval(self.cfg.poll_interval);
         let mut presence_tick = tokio::time::interval(Duration::from_secs(45));
@@ -150,19 +176,25 @@ impl Bot {
 
     async fn poll_room(&self, room_id: &str) -> Result<(), Error> {
         let after = {
-            let cursors = self.cursors.lock().await;
-            cursors.get(room_id).cloned().unwrap_or_default()
+            let rooms = self.rooms.lock().await;
+            rooms
+                .get(room_id)
+                .map(|rs| rs.cursor.clone())
+                .unwrap_or_default()
         };
 
         match self.chatto.get_room_events(room_id, &after, 50).await {
             Ok(resp) => {
                 if let Some(page) = resp.page {
                     {
-                        let mut cursors = self.cursors.lock().await;
-                        cursors.insert(room_id.to_owned(), page.end_cursor.clone());
+                        let mut rooms = self.rooms.lock().await;
+                        if let Some(rs) = rooms.get_mut(room_id) {
+                            rs.cursor = page.end_cursor;
+                        }
                     }
 
-                    for event in page.events {
+                    let events = page.events;
+                    for event in events {
                         self.process_event(room_id, event).await?;
                     }
                 }
@@ -180,6 +212,10 @@ impl Bot {
     }
 
     async fn process_event(&self, room_id: &str, event: RoomTimelineEvent) -> Result<(), Error> {
+        let Some(message_posted) = event.message_posted else {
+            return Ok(());
+        };
+
         {
             let mut seen = self.seen_events.lock().await;
             if !seen.insert(event.id.clone()) {
@@ -187,9 +223,19 @@ impl Bot {
             }
         }
 
-        let Some(message_posted) = event.message_posted else {
-            return Ok(());
-        };
+        {
+            let uid = self.bot_user_id.lock().await;
+            if uid.as_deref() == Some(&message_posted.message.actor_id) {
+                return Ok(());
+            }
+        }
+
+        if let Some(event_time) = parse_event_time(&event.created_at) {
+            if event_time < self.started_at {
+                return Ok(());
+            }
+        }
+
         let Some(body) = message_posted.message.body else {
             return Ok(());
         };
@@ -200,6 +246,13 @@ impl Bot {
         let Some(parsed) = parse_command(&body, &self.cfg.bot_name) else {
             return Ok(());
         };
+
+        info!(
+            cmd = ?parsed.command,
+            args = parsed.args,
+            actor = message_posted.message.actor_id,
+            "processing command"
+        );
 
         match parsed.command {
             Command::Help => {
@@ -627,6 +680,14 @@ impl Bot {
             }
         }
     }
+}
+
+fn parse_event_time(s: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+    Some(DateTime::from_naive_utc_and_offset(naive, Utc))
 }
 
 fn format_duration(seconds: i32) -> String {
