@@ -112,6 +112,8 @@ impl Bot {
             }
         }
 
+        self.setup_avatar().await;
+
         let mut poll_tick = tokio::time::interval(self.cfg.poll_interval);
         let mut presence_tick = tokio::time::interval(Duration::from_secs(45));
 
@@ -133,6 +135,39 @@ impl Bot {
                     self.set_presence().await;
                 }
             }
+        }
+    }
+
+    async fn setup_avatar(&self) {
+        let profile = match self.chatto.get_profile().await {
+            Ok(p) => p,
+            Err(err) => {
+                warn!(error = %err, "failed to get profile");
+                return;
+            }
+        };
+
+        if profile.avatar_url.is_some() {
+            info!("avatar already set");
+            return;
+        }
+
+        let path = std::env::current_dir()
+            .unwrap_or_default()
+            .join("assets")
+            .join("tidal.jpg");
+
+        let data = match tokio::fs::read(&path).await {
+            Ok(d) => d,
+            Err(err) => {
+                warn!(path = %path.display(), error = %err, "failed to read avatar image");
+                return;
+            }
+        };
+
+        match self.chatto.set_avatar(&data).await {
+            Ok(()) => info!("avatar set successfully"),
+            Err(err) => warn!(error = %err, "failed to set avatar"),
         }
     }
 

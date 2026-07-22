@@ -60,24 +60,27 @@ impl Client {
     }
 
     pub async fn get_viewer(&self) -> Result<String, Error> {
+        let profile = self.get_profile().await?;
+        Ok(profile.id)
+    }
+
+    pub async fn get_profile(&self) -> Result<UserProfile, Error> {
         #[derive(Debug, Deserialize)]
         struct Resp {
             user: User,
         }
         #[derive(Debug, Deserialize)]
         struct User {
-            profile: Profile,
+            profile: UserProfile,
         }
-        #[derive(Debug, Deserialize)]
-        struct Profile {
-            id: String,
-        }
-
         let resp: Resp = self
-            .do_rpc("chatto.api.v1.ViewerService", "GetViewer", Some(json!({})))
+            .do_rpc(
+                "chatto.api.v1.ViewerService",
+                "GetViewer",
+                Some(json!({})),
+            )
             .await?;
-
-        Ok(resp.user.profile.id)
+        Ok(resp.user.profile)
     }
 
     pub async fn add_member(&self, room_id: &str, user_id: &str) -> Result<(), Error> {
@@ -147,6 +150,48 @@ impl Client {
         )
         .await
         .map(|_| ())
+    }
+
+    pub async fn set_avatar(&self, image_data: &[u8]) -> Result<(), Error> {
+        let url = format!(
+            "{}/api/connect/chatto.api.v1.MyAccountService/UploadAvatar",
+            self.base_url
+        );
+
+        let mut inner = Vec::with_capacity(image_data.len() + 10);
+        inner.push(0x0A);
+        encode_varint(&mut inner, image_data.len() as u64);
+        inner.extend_from_slice(image_data);
+
+        let mut outer = Vec::with_capacity(inner.len() + 10);
+        outer.push(0x22);
+        encode_varint(&mut outer, inner.len() as u64);
+        outer.extend_from_slice(&inner);
+
+        let mut request = self
+            .http_client
+            .request(Method::POST, &url)
+            .header(CONTENT_TYPE, "application/proto")
+            .header("connect-protocol-version", "1")
+            .body(outer);
+
+        if !self.token.is_empty() {
+            request = request.header(AUTHORIZATION, format!("Bearer {}", self.token));
+        }
+
+        let response = request.send().await.map_err(Error::Http)?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.map_err(Error::Http)?;
+            return Err(Error::Rpc(RpcError {
+                status_code: status,
+                url,
+                body: truncate(&body, 500),
+            }));
+        }
+
+        Ok(())
     }
 
     async fn do_rpc<Req, Resp>(
@@ -241,6 +286,17 @@ pub fn is_permission_denied_error(err: &Error) -> bool {
     }
 }
 
+pub fn encode_varint(buf: &mut Vec<u8>, mut value: u64) {
+    loop {
+        if value < 0x80 {
+            buf.push(value as u8);
+            break;
+        }
+        buf.push((value as u8 & 0x7F) | 0x80);
+        value >>= 7;
+    }
+}
+
 pub fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_owned();
@@ -255,6 +311,16 @@ pub fn truncate(s: &str, max_len: usize) -> String {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct GetRoomEventsResponse {
     pub page: Option<RoomTimelinePage>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
