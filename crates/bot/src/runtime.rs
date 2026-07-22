@@ -112,8 +112,8 @@ impl Bot {
             tokio::select! {
                 _ = poll_tick.tick() => {
                     self.reap_playback_tasks().await;
-                    self.poll_all_rooms().await?;
-                    self.auto_prepare_playback().await?;
+                    self.poll_all_rooms().await;
+                    self.auto_prepare_playback().await;
                 }
                 _ = presence_tick.tick() => {
                     self.set_presence().await;
@@ -140,11 +140,12 @@ impl Bot {
         }
     }
 
-    async fn poll_all_rooms(&self) -> Result<(), Error> {
+    async fn poll_all_rooms(&self) {
         for room_id in &self.cfg.rooms {
-            self.poll_room(room_id).await?;
+            if let Err(err) = self.poll_room(room_id).await {
+                error!(room = room_id, error = %err, "room poll failed");
+            }
         }
-        Ok(())
     }
 
     async fn poll_room(&self, room_id: &str) -> Result<(), Error> {
@@ -407,7 +408,7 @@ impl Bot {
             .await;
     }
 
-    async fn auto_prepare_playback(&self) -> Result<(), Error> {
+    async fn auto_prepare_playback(&self) {
         for room_id in &self.cfg.rooms {
             let next_track = {
                 let mut rooms = self.rooms.lock().await;
@@ -427,7 +428,15 @@ impl Bot {
 
             let stream = {
                 let mut tidal = self.tidal.lock().await;
-                tidal.stream_track(track.tid).await?
+                match tidal.stream_track(track.tid).await {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        error!(room = room_id, track_id = track.tid, error = %err, "failed to resolve stream");
+                        self.send_message(room_id, &format!("Failed to load track stream: {err}"))
+                            .await;
+                        continue;
+                    }
+                }
             };
 
             {
@@ -443,8 +452,6 @@ impl Bot {
 
             self.start_playback_task(room_id).await;
         }
-
-        Ok(())
     }
 
     async fn send_message(&self, room_id: &str, text: &str) {
