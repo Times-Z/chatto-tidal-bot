@@ -410,11 +410,8 @@ impl Bot {
 
         match skipped {
             Some(current) => {
-                self.send_message(
-                    room_id,
-                    &card("Skipped", &current.track.title),
-                )
-                .await;
+                self.send_message(room_id, &card("Skipped", &current.track.title))
+                    .await;
             }
             None => {
                 self.send_message(room_id, &card("Skipped", "Nothing playing."))
@@ -500,11 +497,8 @@ impl Bot {
                     Ok(stream) => stream,
                     Err(err) => {
                         error!(room = room_id, track_id = track.tid, error = %err, "failed to resolve stream");
-                        self.send_message(
-                            room_id,
-                            &card("Stream Error", &format!("{err}")),
-                        )
-                        .await;
+                        self.send_message(room_id, &card("Stream Error", &format!("{err}")))
+                            .await;
                         continue;
                     }
                 }
@@ -532,11 +526,8 @@ impl Bot {
     }
 
     async fn cmd_test(&self, room_id: &str) {
-        self.send_message(
-            room_id,
-            &card("Test", "Publishing 10s of silence..."),
-        )
-        .await;
+        self.send_message(room_id, &card("Test", "Publishing 10s of silence..."))
+            .await;
 
         let token = match self.chatto.get_call_token(room_id).await {
             Ok(token) => token,
@@ -575,11 +566,8 @@ impl Bot {
                     .await;
             }
             Err(err) => {
-                self.send_message(
-                    room_id,
-                    &card("Test Failed", &format!("{err}")),
-                )
-                .await;
+                self.send_message(room_id, &card("Test Failed", &format!("{err}")))
+                    .await;
             }
         }
 
@@ -701,17 +689,17 @@ impl Bot {
                 PlaybackTaskResult::VoiceRequired => {
                     self.send_message(
                         room_id,
-                        &card("Voice Required", "Join a voice channel first, then use `play`."),
+                        &card(
+                            "Voice Required",
+                            "Join a voice channel first, then use `play`.",
+                        ),
                     )
                     .await;
                 }
                 PlaybackTaskResult::Error(err) => {
                     error!(room = room_id, error = %err, "playback task error");
-                    self.send_message(
-                        room_id,
-                        &card("Playback Error", &format!("{err}")),
-                    )
-                    .await;
+                    self.send_message(room_id, &card("Playback Error", &format!("{err}")))
+                        .await;
                 }
             }
         }
