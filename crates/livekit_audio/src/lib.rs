@@ -123,11 +123,11 @@ impl Player {
         let mut stdout = child
             .stdout
             .take()
-            .ok_or_else(|| std::io::Error::new(ErrorKind::Other, "missing ffmpeg stdout"))?;
+            .ok_or_else(|| std::io::Error::other("missing ffmpeg stdout"))?;
         let mut stderr = child
             .stderr
             .take()
-            .ok_or_else(|| std::io::Error::new(ErrorKind::Other, "missing ffmpeg stderr"))?;
+            .ok_or_else(|| std::io::Error::other("missing ffmpeg stderr"))?;
 
         let stderr_task = tokio::spawn(async move {
             let mut bytes = Vec::new();
