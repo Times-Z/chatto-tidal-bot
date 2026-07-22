@@ -686,7 +686,7 @@ impl Bot {
                 }
                 PlaybackTaskResult::Error(err) => {
                     error!(room = room_id, error = %err, "playback task error");
-                    self.send_message(room_id, &card("Playback Error", &format!("{err}")))
+                    self.send_message(room_id, &card("Playback Error", &err.to_string()))
                         .await;
                 }
             }
