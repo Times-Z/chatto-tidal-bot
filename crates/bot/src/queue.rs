@@ -22,7 +22,7 @@ impl Queue {
         self.tracks.push(track);
     }
 
-    pub fn next(&mut self) -> Option<Track> {
+    pub fn dequeue(&mut self) -> Option<Track> {
         if self.pos >= self.tracks.len() {
             return None;
         }
