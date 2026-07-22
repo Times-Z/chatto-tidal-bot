@@ -39,10 +39,12 @@ Copy `config.example.json` → `config.json` and fill in the fields:
     "chatto_token": "cht_...",
     "livekit_url": "wss://livekit.example.com",
     "tidal_token_path": "tidal_token.json",
+    "bot_name": "tidal.bot",
     "rooms": [
         "R1YR23T6P9wamep"
     ],
-    "poll_interval": "3s"
+    "poll_interval": "3s",
+    "volume": 60
 }
 ```
 
@@ -77,6 +79,10 @@ curl -X POST https://your-instance.chatto.run/auth/login \
 
 The response contains the token in the `"token"` field. You can also grab it from the browser DevTools (Application → Local Storage → `chatto_bearer_token`) after logging into the web UI as the bot.
 
+### `bot_name` — Bot display name
+
+The bot's username on your Chatto server. This is used to recognize mentions — messages like `@tidal.bot /play ...` will trigger the bot. If omitted, defaults to `"tidal.bot"`.
+
 ### `chatto_url` — API endpoint
 
 The base URL of your Chatto server (e.g. `https://chat.example.com`). Do **not** include a trailing slash.
@@ -103,22 +109,27 @@ To find a room ID, simply open the room in your browser — the ID is in the URL
 
 > **Note**: The bot automatically tries to add itself to the room on startup by calling `GetViewer` → `AddMember`. This only works if the bot user has `manage` permission on the room.
 
+### `volume` — Default playback volume (0–200)
+
+Initial volume percentage. Can be changed at runtime with `/volume`. Default: `100`.
+
 ## Usage
 
 ```bash
-./chatto-tidal-bot config.json
+./chatto-tidal-bot [config.json]
 ```
 
-The bot joins the configured rooms and listens for chat commands:
+The bot joins the configured rooms and listens for chat commands. Defaults to `config.json` if no path is given.
 
 | Command | Description |
 |---------|-------------|
-| `/play <query>` | Search and play a track |
-| `/queue <query>` | Add a track to the queue |
-| `/queue` | Show the current queue |
-| `/skip` | Skip to the next track |
-| `/stop` | Stop playback and clear the queue |
-| `/nowplaying` | Show the currently playing track |
-| `/help` | Display available commands |
+| `play <query/URL>` | Search or use a Tidal URL (track, album, playlist, artist) |
+| `queue <query/URL>` | Add a track to the queue |
+| `queue` | Show the current queue |
+| `skip` | Skip to the next track |
+| `stop` | Stop playback and clear the queue |
+| `nowplaying` | Show the currently playing track |
+| `volume <0-200>` | Show or set the volume |
+| `help` | Display available commands |
 
-**Important**: A voice call must already be active in the room before using `/play`. The bot joins the existing call — it does not create one.
+The bot auto-joins the voice call when a track starts playing and stays in the call after the queue empties, ready for more tracks. Use `/stop` to leave the call.

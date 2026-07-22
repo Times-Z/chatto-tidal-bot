@@ -1,10 +1,12 @@
 {
     "chatto_url": "https://chat.example.com",
-    "chatto_token": "your-chatto-bot-bearer-token",
+    "chatto_token": "cht_...",
     "livekit_url": "wss://livekit.example.com",
     "tidal_token_path": "tidal_token.json",
+    "bot_name": "tidal.bot",
     "rooms": [
-        "rm_xxxxxxxxxxxxxxxxxxxxxx"
+        "R1YR23T6P9wamep"
     ],
-    "poll_interval": "3s"
+    "poll_interval": "3s",
+    "volume": 20
 }

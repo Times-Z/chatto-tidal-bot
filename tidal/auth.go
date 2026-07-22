@@ -19,7 +19,8 @@ const (
 	deviceAuthURL = "https://auth.tidal.com/v1/oauth2/device_authorization"
 	tokenURL      = "https://auth.tidal.com/v1/oauth2/token"
 
-	// Same base64-encoded client credentials as go-tiddl
+	// defaultEncodedClient is the base64-encoded client_id;client_secret
+	// used by go-tiddl and other open-source Tidal clients.
 	defaultEncodedClient = "NE4zbjZRMXg5NUxMNUs3cDtvS09YZkpXMzcxY1g2eGFaMFB5aGdHTkJkTkxsQlpkNEFLS1lvdWdNamlrPQ=="
 )
 
@@ -32,6 +33,7 @@ func defaultCredentials() (clientID, clientSecret string) {
 	return parts[0], parts[1]
 }
 
+// loadSavedToken reads a previously saved OAuth2 token from disk.
 func loadSavedToken(tokenPath string) *oauth2.Token {
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
@@ -44,6 +46,7 @@ func loadSavedToken(tokenPath string) *oauth2.Token {
 	return &token
 }
 
+// saveToken persists an OAuth2 token to disk for reuse on subsequent launches.
 func saveToken(tokenPath string, token *oauth2.Token) {
 	data, err := json.MarshalIndent(token, "", "  ")
 	if err != nil {
@@ -55,6 +58,11 @@ func saveToken(tokenPath string, token *oauth2.Token) {
 	}
 }
 
+var tidalScopes = []string{"r_usr", "w_usr", "w_sub"}
+
+// deviceAuth initiates a Tidal device authorization flow, printing a URL
+// and code for the user to authorize in their browser, then polls for
+// the resulting token.
 func deviceAuth(ctx context.Context, tokenPath string) (*oauth2.Token, error) {
 	clientID, clientSecret := defaultCredentials()
 
@@ -65,7 +73,7 @@ func deviceAuth(ctx context.Context, tokenPath string) (*oauth2.Token, error) {
 			TokenURL:  tokenURL,
 			AuthStyle: oauth2.AuthStyleInHeader,
 		},
-		Scopes: []string{"r_usr", "w_usr", "w_sub"},
+		Scopes: tidalScopes,
 	}
 
 	httpClient := &http.Client{}
@@ -116,24 +124,12 @@ func deviceAuth(ctx context.Context, tokenPath string) (*oauth2.Token, error) {
 	return token, nil
 }
 
-func pollDeviceAuth(ctx context.Context, httpClient *http.Client, cfg *oauth2.Config, deviceCode string, interval int) (*oauth2.Token, error) {
-	if interval < 2 {
-		interval = 2
-	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
-
+// pollDeviceAuth polls the Tidal token endpoint at the specified interval
+// until the user completes device authorization or the code expires.
+func pollDeviceAuth(ctx context.Context, httpClient *http.Client, cfg *oauth2.Config, deviceCode string, intervalSec int) (*oauth2.Token, error) {
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-ticker.C:
-		}
-
-		form := strings.NewReader(
-			fmt.Sprintf("client_id=%s&device_code=%s&grant_type=urn:ietf:params:oauth:grant-type:device_code",
-				cfg.ClientID, deviceCode))
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, form)
+		form := strings.NewReader("client_id=" + cfg.ClientID + "&device_code=" + deviceCode + "&grant_type=urn:ietf:params:oauth:grant-type:device_code")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.Endpoint.TokenURL, form)
 		if err != nil {
 			return nil, fmt.Errorf("create token request: %w", err)
 		}
@@ -151,6 +147,7 @@ func pollDeviceAuth(ctx context.Context, httpClient *http.Client, cfg *oauth2.Co
 				RefreshToken string `json:"refresh_token"`
 				ExpiresIn    int    `json:"expires_in"`
 				TokenType    string `json:"token_type"`
+				Scope        string `json:"scope"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 				resp.Body.Close()
@@ -182,6 +179,7 @@ func pollDeviceAuth(ctx context.Context, httpClient *http.Client, cfg *oauth2.Co
 
 		switch errResp.Error {
 		case "authorization_pending":
+			time.Sleep(time.Duration(intervalSec) * time.Second)
 			continue
 		case "expired_token", "invalid_grant":
 			return nil, fmt.Errorf("device code expired")

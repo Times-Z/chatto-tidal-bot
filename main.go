@@ -1,3 +1,12 @@
+// Command chatto-tidal-bot is a Chatto music bot that plays Tidal HiFi Plus
+// streams in voice channels via LiveKit.
+//
+// Usage:
+//
+//	chatto-tidal-bot [config.json]
+//
+// The config file defaults to "config.json". Tidal authentication happens
+// automatically on first launch via device authorization flow.
 package main
 
 import (
@@ -40,6 +49,8 @@ func main() {
 		LivekitURL:     cfg.LivekitURL,
 		TidalTokenPath: cfg.TidalTokenPath,
 		PollInterval:   cfg.PollInterval.ToDuration(),
+		BotName:        cfg.BotName,
+		Volume:         cfg.Volume,
 	}
 
 	b, err := bot.New(ctx, botCfg, chattoClient)
