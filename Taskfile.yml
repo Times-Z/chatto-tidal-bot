@@ -4,29 +4,34 @@ tasks:
   default:
     desc: Show available tasks
     cmds:
-      - task --list
+      - go-task --list
 
   build:
-    desc: Build chatto-tidal-bot binary
+    desc: Build chatto-bot-tidal binary (release)
     cmds:
-      - go build -o chatto-tidal-bot .
+      - cargo build --release -p chatto-bot-tidal
 
   fmt:
-    desc: Format Go sources
+    desc: Format Rust sources
     cmds:
-      - go fmt ./...
+      - cargo fmt
 
   test:
-    desc: Run tests (auto fallback to no-CGO mode if native audio deps are missing)
+    desc: Run all tests
+    cmds:
+      - cargo test
+
+  dev:
+    desc: Run the app in dev mode (auto-reload with cargo-watch if available)
     cmds:
       - |
-        if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists soxr opusfile; then
-          go test . ./bot ./chatto ./tidal ./livekit
+        if command -v cargo-watch >/dev/null 2>&1 || cargo install --list 2>/dev/null | grep -q 'cargo-watch'; then
+          cargo watch -x "run -p chatto-bot-tidal"
         else
-          CGO_ENABLED=0 go test . ./bot ./chatto ./tidal ./livekit
+          RUST_LOG=debug cargo run -p chatto-bot-tidal
         fi
 
-  test:nocgo:
-    desc: Run tests without CGO/native audio dependencies
+  dev:once:
+    desc: Run the app once in dev mode (no auto-reload)
     cmds:
-      - CGO_ENABLED=0 go test . ./bot ./chatto ./tidal ./livekit
+      - RUST_LOG=debug cargo run -p chatto-bot-tidal

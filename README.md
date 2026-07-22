@@ -1,6 +1,6 @@
 # Chatto Tidal Bot
 
-A music bot for [Chatto](https://github.com/chattocorp/chatto) v0.4.14 that plays **Tidal HiFi Plus** streams in voice channels via LiveKit.
+A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi Plus** streams in voice channels via LiveKit.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ User ──(play Daft Punk)──▶ Chatto ──▶ Bot (polling GetRoomEvents
 ## Build
 
 ```bash
-go build -o chatto-tidal-bot .
+cargo build --release -p chatto-bot-tidal
 
 # or
 
@@ -41,22 +41,8 @@ This project uses [Task](https://taskfile.dev) (task.dev) for common developer w
 task --list
 task fmt
 task test
-task test:nocgo
+task dev
 ```
-
-### Build Requirements
-
-The default build (CGO enabled) requires native audio libraries used by LiveKit/media-sdk,
-including `soxr` and `opusfile`.
-
-If these system dependencies are not available, you can still run most unit tests using:
-
-```bash
-task test:nocgo
-```
-
-In this mode, the `livekit` package is compiled with a no-CGO stub player that returns a
-clear runtime error when audio publishing is attempted.
 
 ## Configuration
 
@@ -117,7 +103,7 @@ Defined in your Chatto configuration (`LIVEKIT_HOST` env var or config file). Th
 The token is obtained automatically on first launch via Tidal's **device authorization flow**:
 
 ```bash
-./chatto-tidal-bot config.json
+./target/release/chatto-bot-tidal config.json
 ```
 
 The bot prints a URL and a code. Open the URL in a browser, enter the code, and authorize Tidal access. The token is saved to the specified file (default: `tidal_token.json`).
@@ -156,7 +142,7 @@ Initial volume percentage. Can be changed at runtime with `volume`. Default: `20
 ## Usage
 
 ```bash
-./chatto-tidal-bot [config.json]
+./target/release/chatto-bot-tidal [config.json]
 ```
 
 The bot joins the configured rooms and listens for chat commands. Defaults to `config.json` if no path is given.

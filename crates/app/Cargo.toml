@@ -1,0 +1,15 @@
+[package]
+name = "chatto-bot-tidal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bot = { path = "../bot" }
+chatto = { path = "../chatto" }
+config = { path = "../config" }
+tidal = { path = "../tidal" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

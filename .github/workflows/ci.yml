@@ -14,33 +14,8 @@ permissions:
   packages: read
 
 jobs:
-  static-analysis:
-    name: Static Analysis
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Set up Go
-        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install native audio dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsoxr-dev libopusfile-dev
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with:
-          version: latest
-
   build:
     name: Build and Test
-    needs: [static-analysis]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,27 +30,36 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libopus-dev libsoxr-dev
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          go-version-file: go.mod
-          cache: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install native audio dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsoxr-dev libopusfile-dev
+      - name: Check formatting
+        run: cargo fmt --all --check
 
-      - name: Test without CGO
-        run: CGO_ENABLED=0 go test . ./bot ./chatto ./tidal ./livekit -v -count=1
+      - name: Clippy
+        run: cargo clippy -- -D warnings
 
-      - name: Test with CGO
-        run: go test . ./bot ./chatto ./tidal ./livekit -v -count=1
+      - name: Run tests
+        run: cargo test --all --all-features --no-fail-fast
 
-      - name: Build binary
-        run: go build -o chatto-tidal-bot .
+      - name: Build release
+        run: cargo build --release -p chatto-bot-tidal
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: chatto-tidal-bot-linux-amd64
-          path: chatto-tidal-bot
+          name: chatto-bot-tidal-linux-amd64
+          path: target/release/chatto-bot-tidal
           include-hidden-files: false
