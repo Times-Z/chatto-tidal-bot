@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,11 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+)
+
+const (
+	errTokenNotMember        = "not a member of this room"
+	errTokenPermissionDenied = "permission denied"
 )
 
 // truncate cuts a string to a maximum byte length, ensuring valid UTF-8.
@@ -34,6 +40,35 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+}
+
+// RPCError wraps non-2xx responses returned by Chatto Connect RPC endpoints.
+type RPCError struct {
+	StatusCode int
+	URL        string
+	Body       string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("RPC error (status %d) for %s: %s", e.StatusCode, e.URL, e.Body)
+}
+
+// IsNotMemberError reports whether an error indicates the caller is not a room member.
+func IsNotMemberError(err error) bool {
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(rpcErr.Body), errTokenNotMember)
+}
+
+// IsPermissionDeniedError reports whether an error indicates missing permissions.
+func IsPermissionDeniedError(err error) bool {
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(rpcErr.Body), errTokenPermissionDenied)
 }
 
 // NewClient creates a new Chatto API client for the given server URL and bearer token.
@@ -87,7 +122,11 @@ func (c *Client) doRPC(ctx context.Context, service, method string, req, resp an
 	}
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return fmt.Errorf("RPC error (status %d) for %s: %s", httpResp.StatusCode, url, truncate(string(respBody), 500))
+		return &RPCError{
+			StatusCode: httpResp.StatusCode,
+			URL:        url,
+			Body:       truncate(string(respBody), 500),
+		}
 	}
 
 	if resp != nil {

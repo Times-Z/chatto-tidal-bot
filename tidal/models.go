@@ -12,9 +12,9 @@ import (
 
 // Quality constants that can be used in config.json for tidal_quality.
 const (
-	QualityLow          = "LOW"
-	QualityHigh         = "HIGH"
-	QualityLossless     = "LOSSLESS"
+	QualityLow           = "LOW"
+	QualityHigh          = "HIGH"
+	QualityLossless      = "LOSSLESS"
 	QualityHiResLossless = "HI_RES_LOSSLESS"
 )
 

@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Package livekit provides a PCM audio publisher for LiveKit rooms.
 // It decodes audio via ffmpeg and publishes PCM16 stereo samples at 48kHz.
 package livekit
@@ -14,9 +16,9 @@ import (
 	"time"
 
 	"github.com/go-logr/stdr"
+	protoLogger "github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	lkmedia "github.com/livekit/server-sdk-go/v2/pkg/media"
-	protoLogger "github.com/livekit/protocol/logger"
 )
 
 // Player publishes PCM16 stereo audio to a LiveKit room.

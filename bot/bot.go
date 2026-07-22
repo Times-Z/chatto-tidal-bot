@@ -19,9 +19,6 @@ import (
 	"chatto-tidal-bot/tidal"
 )
 
-const errNotMember = "not a member of this room"
-const errPermissionDenied = "permission denied"
-
 // artistSuffix returns " by <artist>" when artist is non-empty, or an empty string otherwise.
 func artistSuffix(artist string) string {
 	if artist == "" {
@@ -196,7 +193,7 @@ func (b *Bot) pollRoom(ctx context.Context, roomID string, cursors map[string]st
 // handlePollError handles room polling errors. If the error indicates the bot
 // is not a member, it attempts to add itself to the room automatically.
 func (b *Bot) handlePollError(ctx context.Context, roomID string, err error, after string) {
-	if strings.Contains(err.Error(), errNotMember) || strings.Contains(err.Error(), errPermissionDenied) {
+	if chatto.IsNotMemberError(err) || chatto.IsPermissionDeniedError(err) {
 		slog.Info("not a member, trying to self-add to room", "room", roomID)
 		userID, viewErr := b.chattoClient.GetViewer(ctx)
 		if viewErr != nil {
@@ -592,14 +589,17 @@ func (b *Bot) startPlayback(ctx context.Context, roomID string) {
 	rs.mu.Unlock()
 
 	go func() {
+		playLoopCtx, loopCancel := context.WithCancel(ctx)
+		defer loopCancel()
+
 		for {
 			track, ok := rs.queue.Next()
 			if !ok {
-				b.endPlayback(roomID)
+				b.endPlayback(playLoopCtx, roomID)
 				return
 			}
 
-			playCtx, cancel := context.WithCancel(context.Background())
+			playCtx, cancel := context.WithCancel(playLoopCtx)
 			rs.mu.Lock()
 			rs.playCtx = playCtx
 			rs.playCancel = cancel
@@ -610,7 +610,7 @@ func (b *Bot) startPlayback(ctx context.Context, roomID string) {
 
 			if err != nil && err != context.Canceled {
 				slog.Error("play track error", "error", err)
-				b.chattoClient.CreateMessage(context.Background(), roomID, fmt.Sprintf("Playback error: %v", err))
+				b.sendMessage(playLoopCtx, roomID, fmt.Sprintf("Playback error: %v", err))
 			}
 		}
 	}()
@@ -619,7 +619,7 @@ func (b *Bot) startPlayback(ctx context.Context, roomID string) {
 // endPlayback stops playback, disconnects the LiveKit player, and notifies
 // the room that the queue is empty. The bot stays in the voice call for
 // subsequent tracks.
-func (b *Bot) endPlayback(roomID string) {
+func (b *Bot) endPlayback(ctx context.Context, roomID string) {
 	rs := b.room(roomID)
 	rs.mu.Lock()
 	rs.running = false
@@ -633,7 +633,7 @@ func (b *Bot) endPlayback(roomID string) {
 		rs.mu.Unlock()
 	}
 
-	b.chattoClient.CreateMessage(context.Background(), roomID, "Queue empty — add more with `play`")
+	b.sendMessage(ctx, roomID, "Queue empty — add more with `play`")
 }
 
 // playTrack streams a track from Tidal and publishes it to LiveKit via ffmpeg.
@@ -651,7 +651,7 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 	if remaining > 0 {
 		msg += fmt.Sprintf("\n`%d` more in queue", remaining)
 	}
-	b.chattoClient.CreateMessage(context.Background(), roomID, msg)
+	b.sendMessage(ctx, roomID, msg)
 
 	// Ensure we have a LiveKit player connected.
 	rs.mu.Lock()
@@ -664,7 +664,7 @@ func (b *Bot) playTrack(ctx context.Context, roomID string, track Track) error {
 			return fmt.Errorf("join call: %w", err)
 		}
 		if !joined {
-			b.chattoClient.CreateMessage(context.Background(), roomID, "Join a voice channel first and try again.")
+			b.sendMessage(ctx, roomID, "Join a voice channel first and try again.")
 			return nil
 		}
 

@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -61,7 +63,8 @@ func LoadConfig(path string) (*Config, error) {
 
 	cfg := &Config{
 		PollInterval: Duration(3 * time.Second),
-		Volume:       100,
+		SampleRate:   48000,
+		Volume:       20,
 	}
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -77,5 +80,75 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.TidalTokenPath = "tidal_token.json"
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// Validate checks that required configuration is present and coherent.
+func (c *Config) Validate() error {
+	if strings.TrimSpace(c.ChattoURL) == "" {
+		return fmt.Errorf("invalid config: chatto_url is required")
+	}
+	if err := validateURL(c.ChattoURL, "chatto_url", "http", "https"); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(c.ChattoToken) == "" {
+		return fmt.Errorf("invalid config: chatto_token is required")
+	}
+
+	if strings.TrimSpace(c.LivekitURL) == "" {
+		return fmt.Errorf("invalid config: livekit_url is required")
+	}
+	if err := validateURL(c.LivekitURL, "livekit_url", "ws", "wss"); err != nil {
+		return err
+	}
+
+	if len(c.Rooms) == 0 {
+		return fmt.Errorf("invalid config: rooms must contain at least one room ID")
+	}
+	for i, roomID := range c.Rooms {
+		if strings.TrimSpace(roomID) == "" {
+			return fmt.Errorf("invalid config: rooms[%d] must not be empty", i)
+		}
+	}
+
+	if c.PollInterval.ToDuration() <= 0 {
+		return fmt.Errorf("invalid config: poll_interval must be > 0")
+	}
+
+	if c.Volume < 0 || c.Volume > 200 {
+		return fmt.Errorf("invalid config: volume must be between 0 and 200")
+	}
+
+	if c.SampleRate != 44100 && c.SampleRate != 48000 {
+		return fmt.Errorf("invalid config: sample_rate must be 44100 or 48000")
+	}
+
+	if strings.TrimSpace(c.TidalTokenPath) == "" {
+		return fmt.Errorf("invalid config: tidal_token_path must not be empty")
+	}
+
+	return nil
+}
+
+func validateURL(raw, field string, allowedSchemes ...string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid config: %s is not a valid URL: %w", field, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("invalid config: %s must include scheme and host", field)
+	}
+
+	for _, s := range allowedSchemes {
+		if strings.EqualFold(u.Scheme, s) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("invalid config: %s must use one of schemes: %s", field, strings.Join(allowedSchemes, ", "))
 }

@@ -2,7 +2,7 @@ package bot
 
 import "strings"
 
-// Command represents a bot command identifier (always includes the leading "/").
+// Command represents a bot command identifier without leading slash.
 type Command string
 
 const (
@@ -35,15 +35,20 @@ type ParsedCommand struct {
 
 // parseCommand extracts a command and its arguments from a chat message body.
 //
-// It supports two styles:
-//   - Slash commands: "/play Daft Punk" or "@bot /play Daft Punk"
-//   - Natural language with mention: "@bot play Daft Punk" (without leading "/")
-//
+// It supports slash and non-slash forms, with or without mention.
 // Messages without a recognized command pattern return nil.
 func parseCommand(body string, botName string) *ParsedCommand {
 	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil
+	}
 
-	body, wasMentioned := stripMention(body, botName)
+	body, _ = stripMention(body, botName)
+	body = strings.TrimSpace(body)
+	body = strings.TrimPrefix(body, "/")
+	if body == "" {
+		return nil
+	}
 
 	parts := strings.SplitN(body, " ", 2)
 	raw := strings.ToLower(parts[0])
@@ -56,15 +61,6 @@ func parseCommand(body string, botName string) *ParsedCommand {
 	for _, c := range allCommands {
 		if cmd == c {
 			return &ParsedCommand{Command: c, Args: args}
-		}
-	}
-
-	if wasMentioned {
-		cmd = Command("/" + raw)
-		for _, c := range allCommands {
-			if cmd == c {
-				return &ParsedCommand{Command: c, Args: args}
-			}
 		}
 	}
 

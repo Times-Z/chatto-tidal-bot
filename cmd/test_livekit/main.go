@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/go-logr/stdr"
-	"github.com/pion/webrtc/v4"
+	protoLogger "github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	lkmedia "github.com/livekit/server-sdk-go/v2/pkg/media"
-	protoLogger "github.com/livekit/protocol/logger"
+	"github.com/pion/webrtc/v4"
 )
 
 func main() {

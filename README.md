@@ -27,7 +27,36 @@ User ──(play Daft Punk)──▶ Chatto ──▶ Bot (polling GetRoomEvents
 
 ```bash
 go build -o chatto-tidal-bot .
+
+# or
+
+task build
 ```
+
+## Development Tasks
+
+This project uses [Task](https://taskfile.dev) (task.dev) for common developer workflows.
+
+```bash
+task --list
+task fmt
+task test
+task test:nocgo
+```
+
+### Build Requirements
+
+The default build (CGO enabled) requires native audio libraries used by LiveKit/media-sdk,
+including `soxr` and `opusfile`.
+
+If these system dependencies are not available, you can still run most unit tests using:
+
+```bash
+task test:nocgo
+```
+
+In this mode, the `livekit` package is compiled with a no-CGO stub player that returns a
+clear runtime error when audio publishing is attempted.
 
 ## Configuration
 
