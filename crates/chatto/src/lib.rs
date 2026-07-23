@@ -4,6 +4,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Client as HttpClient, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -88,6 +89,16 @@ impl Client {
             "chatto.api.v1.RoomService",
             "AddMember",
             Some(json!({"roomId": room_id, "userId": user_id})),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn join_room(&self, room_id: &str) -> Result<(), Error> {
+        self.do_rpc::<_, serde_json::Value>(
+            "chatto.api.v1.RoomService",
+            "JoinRoom",
+            Some(json!({"roomId": room_id})),
         )
         .await
         .map(|_| ())
@@ -336,6 +347,15 @@ pub struct RoomTimelinePage {
     pub has_older: bool,
     #[serde(default)]
     pub has_newer: bool,
+    #[serde(default)]
+    pub includes: Option<RoomTimelineIncludes>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomTimelineIncludes {
+    #[serde(default)]
+    pub users: HashMap<String, UserProfile>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]

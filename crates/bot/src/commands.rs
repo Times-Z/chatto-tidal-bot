@@ -6,6 +6,7 @@ pub enum Command {
     Stop,
     NowPlaying,
     Volume,
+    Mute,
     Test,
     Help,
 }
@@ -41,6 +42,7 @@ pub fn parse_command(body: &str, bot_name: &str) -> Option<ParsedCommand> {
         "stop" => Command::Stop,
         "nowplaying" => Command::NowPlaying,
         "volume" => Command::Volume,
+        "mute" | "unmute" => Command::Mute,
         "test" => Command::Test,
         "help" => Command::Help,
         _ => return None,

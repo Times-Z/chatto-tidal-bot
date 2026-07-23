@@ -3,12 +3,11 @@
 use libwebrtc::audio_source::native::NativeAudioSource;
 use libwebrtc::prelude::{AudioFrame, AudioSourceOptions, RtcAudioSource, RtcError};
 use livekit::options::TrackPublishOptions;
-use livekit::prelude::{LocalTrack, Room, RoomOptions};
+use livekit::prelude::{LocalTrack, Room, RoomOptions, TrackSource};
 use livekit::track::LocalAudioTrack;
 use std::io::ErrorKind;
 use std::process::Stdio;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
@@ -40,7 +39,7 @@ pub enum Error {
 
 pub struct Player {
     room: Room,
-    sample_rate: u32,
+    pub sample_rate: u32,
     volume: f32,
     track: Option<LocalAudioTrack>,
 }
@@ -68,40 +67,41 @@ impl Player {
         self.volume = value.clamp(0.0, 2.0);
     }
 
-    pub async fn play_silence_only(&mut self, duration: Duration) -> Result<(), Error> {
-        let source = self.publish_track("test-silence").await?;
-        let frame_duration = Duration::from_millis(20);
-        let samples_per_channel = (self.sample_rate / 50) as usize;
-        let samples = vec![0_i16; samples_per_channel * 2];
-        let deadline = Instant::now() + duration;
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
 
-        while Instant::now() < deadline {
-            let frame = AudioFrame {
-                data: samples.as_slice().into(),
-                sample_rate: self.sample_rate,
-                num_channels: 2,
-                samples_per_channel: samples_per_channel as u32,
-            };
-            source.capture_frame(&frame).await?;
-            tokio::time::sleep(frame_duration).await;
-        }
-
+    pub async fn publish_track(&mut self, track_name: &str) -> Result<NativeAudioSource, Error> {
         self.unpublish_track().await;
-        Ok(())
+
+        let source =
+            NativeAudioSource::new(AudioSourceOptions::default(), self.sample_rate, 2, 1000);
+        let track =
+            LocalAudioTrack::create_audio_track(track_name, RtcAudioSource::Native(source.clone()));
+
+        let mut publish_options = TrackPublishOptions::default();
+        publish_options.source = TrackSource::Microphone;
+
+        self.room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track.clone()),
+                publish_options,
+            )
+            .await?;
+
+        self.track = Some(track);
+        Ok(source)
     }
 
-    pub async fn play_url(&mut self, stream_url: &str) -> Result<(), Error> {
-        self.play_url_until(stream_url, Arc::new(AtomicBool::new(false)))
-            .await
-    }
-
-    pub async fn play_url_until(
-        &mut self,
+    pub async fn play_url_on_source(
+        source: &NativeAudioSource,
         stream_url: &str,
-        cancel: Arc<AtomicBool>,
+        sample_rate: u32,
+        volume_pct: &AtomicU32,
+        cancel: &AtomicBool,
+        muted: &AtomicBool,
     ) -> Result<(), Error> {
-        let source = self.publish_track("music").await?;
-
         let mut ffmpeg = Command::new("ffmpeg");
         ffmpeg
             .kill_on_drop(true)
@@ -112,7 +112,7 @@ impl Player {
             .arg("-ac")
             .arg("2")
             .arg("-ar")
-            .arg(self.sample_rate.to_string())
+            .arg(sample_rate.to_string())
             .arg("-loglevel")
             .arg("warning")
             .arg("pipe:1")
@@ -135,33 +135,35 @@ impl Player {
             String::from_utf8_lossy(&bytes).trim().to_owned()
         });
 
-        let samples_per_channel = (self.sample_rate / 100) as usize;
+        let samples_per_channel = (sample_rate / 100) as usize;
         let mut frame_buf = vec![0_u8; samples_per_channel * 2 * 2];
 
         loop {
             if cancel.load(Ordering::SeqCst) {
                 let _ = child.start_kill();
                 let _ = child.wait().await;
-                self.unpublish_track().await;
                 return Err(Error::Cancelled);
             }
 
             match stdout.read_exact(&mut frame_buf).await {
                 Ok(_) => {
-                    let mut pcm = bytes_to_pcm16(&frame_buf);
-                    if (self.volume - 1.0).abs() > f32::EPSILON {
-                        for sample in &mut pcm {
-                            *sample = apply_volume(*sample, self.volume);
+                    if !muted.load(Ordering::SeqCst) {
+                        let mut pcm = bytes_to_pcm16(&frame_buf);
+                        let vol = volume_pct.load(Ordering::Relaxed) as f32 / 100.0;
+                        if (vol - 1.0).abs() > f32::EPSILON {
+                            for sample in &mut pcm {
+                                *sample = apply_volume(*sample, vol);
+                            }
                         }
-                    }
 
-                    let frame = AudioFrame {
-                        data: pcm.as_slice().into(),
-                        sample_rate: self.sample_rate,
-                        num_channels: 2,
-                        samples_per_channel: samples_per_channel as u32,
-                    };
-                    source.capture_frame(&frame).await?;
+                        let frame = AudioFrame {
+                            data: pcm.as_slice().into(),
+                            sample_rate,
+                            num_channels: 2,
+                            samples_per_channel: samples_per_channel as u32,
+                        };
+                        source.capture_frame(&frame).await?;
+                    }
                 }
                 Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
                     break;
@@ -173,8 +175,6 @@ impl Player {
         let status = child.wait().await?;
         let stderr_output = stderr_task.await.unwrap_or_default();
 
-        self.unpublish_track().await;
-
         if !status.success() {
             return Err(Error::FfmpegFailed(stderr_output));
         }
@@ -182,29 +182,47 @@ impl Player {
         Ok(())
     }
 
+    pub async fn send_silence_frame(
+        source: &NativeAudioSource,
+        sample_rate: u32,
+    ) -> Result<(), Error> {
+        let samples_per_channel = (sample_rate / 50) as usize;
+        let samples = vec![0_i16; samples_per_channel * 2];
+        let frame = AudioFrame {
+            data: samples.as_slice().into(),
+            sample_rate,
+            num_channels: 2,
+            samples_per_channel: samples_per_channel as u32,
+        };
+        source.capture_frame(&frame).await?;
+        Ok(())
+    }
+
+    pub async fn play_silence_only(&mut self, duration: Duration) -> Result<(), Error> {
+        let source = self.publish_track("mic").await?;
+        let frame_duration = Duration::from_millis(20);
+        let samples_per_channel = (self.sample_rate / 50) as usize;
+        let samples = vec![0_i16; samples_per_channel * 2];
+        let deadline = Instant::now() + duration;
+
+        while Instant::now() < deadline {
+            let frame = AudioFrame {
+                data: samples.as_slice().into(),
+                sample_rate: self.sample_rate,
+                num_channels: 2,
+                samples_per_channel: samples_per_channel as u32,
+            };
+            source.capture_frame(&frame).await?;
+            tokio::time::sleep(frame_duration).await;
+        }
+
+        self.unpublish_track().await;
+        Ok(())
+    }
+
     pub async fn disconnect(&mut self) {
         self.unpublish_track().await;
         let _ = self.room.close().await;
-    }
-
-    async fn publish_track(&mut self, track_name: &str) -> Result<NativeAudioSource, Error> {
-        self.unpublish_track().await;
-
-        let source =
-            NativeAudioSource::new(AudioSourceOptions::default(), self.sample_rate, 2, 1000);
-        let track =
-            LocalAudioTrack::create_audio_track(track_name, RtcAudioSource::Native(source.clone()));
-
-        self.room
-            .local_participant()
-            .publish_track(
-                LocalTrack::Audio(track.clone()),
-                TrackPublishOptions::default(),
-            )
-            .await?;
-
-        self.track = Some(track);
-        Ok(source)
     }
 
     async fn unpublish_track(&mut self) {

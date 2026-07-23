@@ -94,12 +94,17 @@ impl OAuthToken {
     }
 }
 
+pub fn cover_url(image_cover: &str) -> String {
+    format!("https://resources.tidal.com/images/{image_cover}/320x320.jpg")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
     pub id: u64,
     pub title: String,
     pub artist: String,
     pub duration: i32,
+    pub cover_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +113,7 @@ pub struct Track {
     pub title: String,
     pub artist: String,
     pub duration: i32,
+    pub cover_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,11 +244,13 @@ impl Client {
             .into_iter()
             .map(|item| {
                 let artist = artist_name(&item);
+                let cover = track_cover_url(&item);
                 SearchResult {
                     id: item.id,
                     title: item.title,
                     artist,
                     duration: item.duration,
+                    cover_url: cover,
                 }
             })
             .collect();
@@ -262,11 +270,13 @@ impl Client {
             .into_iter()
             .map(|it| {
                 let artist = artist_name(&it.item);
+                let cover = track_cover_url(&it.item);
                 SearchResult {
                     id: it.item.id,
                     title: it.item.title,
                     artist,
                     duration: it.item.duration,
+                    cover_url: cover,
                 }
             })
             .collect())
@@ -283,11 +293,13 @@ impl Client {
             .into_iter()
             .map(|it| {
                 let artist = artist_name(&it.item);
+                let cover = track_cover_url(&it.item);
                 SearchResult {
                     id: it.item.id,
                     title: it.item.title,
                     artist,
                     duration: it.item.duration,
+                    cover_url: cover,
                 }
             })
             .collect())
@@ -304,11 +316,13 @@ impl Client {
             .into_iter()
             .map(|item| {
                 let artist = artist_name(&item);
+                let cover = track_cover_url(&item);
                 SearchResult {
                     id: item.id,
                     title: item.title,
                     artist,
                     duration: item.duration,
+                    cover_url: cover,
                 }
             })
             .collect())
@@ -339,11 +353,13 @@ impl Client {
 
         let item: TidalTrack = serde_json::from_str(&body).map_err(Error::ParseResponse)?;
         let artist = artist_name(&item);
+        let cover = track_cover_url(&item);
         Ok(Track {
             id: item.id,
             title: item.title,
             artist,
             duration: item.duration,
+            cover_url: cover,
         })
     }
 
@@ -506,6 +522,11 @@ struct TidalArtist {
 }
 
 #[derive(Debug, Deserialize)]
+struct TidalAlbum {
+    cover: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct TidalTrack {
     id: u64,
     #[serde(default)]
@@ -516,6 +537,8 @@ struct TidalTrack {
     duration: i32,
     #[serde(default)]
     artists: Vec<TidalArtist>,
+    #[serde(default)]
+    album: Option<TidalAlbum>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,6 +563,14 @@ struct JsonManifest {
     bit_depth: i32,
     #[serde(default)]
     sample_rate: i32,
+}
+
+fn track_cover_url(t: &TidalTrack) -> String {
+    t.album
+        .as_ref()
+        .and_then(|a| a.cover.as_deref())
+        .map(cover_url)
+        .unwrap_or_default()
 }
 
 fn artist_name(t: &TidalTrack) -> String {

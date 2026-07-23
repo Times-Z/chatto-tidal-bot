@@ -5,6 +5,7 @@ pub struct Track {
     pub artist: String,
     pub duration: i32,
     pub requestor: String,
+    pub cover_url: String,
 }
 
 #[derive(Debug, Default)]

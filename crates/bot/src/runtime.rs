@@ -1,11 +1,11 @@
 use crate::commands::{Command, parse_command};
 use crate::queue::{Queue, Track};
-use chatto::{Client as ChattoClient, RoomTimelineEvent};
+use chatto::{Client as ChattoClient, RoomTimelineEvent, UserProfile};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use livekit_audio::Player as LivekitPlayer;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use tidal::Client as TidalClient;
 use tokio::sync::Mutex;
@@ -38,21 +38,33 @@ struct CurrentTrack {
     stream_url: String,
 }
 
-#[derive(Debug, Default)]
-struct RoomState {
-    queue: Queue,
-    current: Option<CurrentTrack>,
-    playback_task: Option<JoinHandle<PlaybackTaskResult>>,
-    playback_cancel: Option<Arc<AtomicBool>>,
-    cursor: String,
+#[derive(Debug)]
+struct VoiceConnection {
+    handle: JoinHandle<()>,
+    cancel: Arc<AtomicBool>,
+    song_cancel: Arc<AtomicBool>,
+    next_url: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug)]
-enum PlaybackTaskResult {
-    Finished,
-    VoiceRequired,
-    Cancelled,
-    Error(String),
+struct RoomState {
+    queue: Queue,
+    current: Option<CurrentTrack>,
+    cursor: String,
+    muted: Arc<AtomicBool>,
+    voice: Option<VoiceConnection>,
+}
+
+impl Default for RoomState {
+    fn default() -> Self {
+        Self {
+            queue: Queue::default(),
+            current: None,
+            cursor: String::new(),
+            muted: Arc::new(AtomicBool::new(false)),
+            voice: None,
+        }
+    }
 }
 
 pub struct Bot {
@@ -62,6 +74,7 @@ pub struct Bot {
     tidal: Arc<Mutex<TidalClient>>,
     rooms: Arc<Mutex<HashMap<String, RoomState>>>,
     volume: Arc<Mutex<f64>>,
+    volume_pct: Arc<AtomicU32>,
     shutdown: Arc<AtomicBool>,
     started_at: DateTime<Utc>,
     seen_events: Arc<Mutex<HashSet<String>>>,
@@ -83,6 +96,7 @@ impl Bot {
 
         Self {
             volume: Arc::new(Mutex::new(f64::from(cfg.volume) / 100.0)),
+            volume_pct: Arc::new(AtomicU32::new(cfg.volume as u32)),
             cfg,
             livekit_url,
             chatto,
@@ -113,6 +127,7 @@ impl Bot {
         }
 
         self.setup_avatar().await;
+        self.join_rooms().await;
 
         let mut poll_tick = tokio::time::interval(self.cfg.poll_interval);
         let mut presence_tick = tokio::time::interval(Duration::from_secs(45));
@@ -127,7 +142,7 @@ impl Bot {
 
             tokio::select! {
                 _ = poll_tick.tick() => {
-                    self.reap_playback_tasks().await;
+                    self.reap_voice_tasks().await;
                     self.poll_all_rooms().await;
                     self.auto_prepare_playback().await;
                 }
@@ -171,6 +186,21 @@ impl Bot {
         }
     }
 
+    async fn join_rooms(&self) {
+        let bot_user_id = self.bot_user_id.lock().await.clone();
+        let Some(ref uid) = bot_user_id else {
+            warn!("bot user ID unknown, cannot join rooms");
+            return;
+        };
+
+        for room_id in &self.cfg.rooms {
+            match self.chatto.add_member(room_id, uid).await {
+                Ok(()) => info!(room = room_id, "joined room"),
+                Err(err) => warn!(room = room_id, error = %err, "failed to join room"),
+            }
+        }
+    }
+
     async fn set_presence(&self) {
         if let Err(err) = self
             .chatto
@@ -209,6 +239,11 @@ impl Bot {
         match self.chatto.get_room_events(room_id, &after, 50).await {
             Ok(resp) => {
                 if let Some(page) = resp.page {
+                    let users = page
+                        .includes
+                        .as_ref()
+                        .map(|inc| &inc.users);
+
                     {
                         let mut rooms = self.rooms.lock().await;
                         if let Some(rs) = rooms.get_mut(room_id) {
@@ -216,9 +251,8 @@ impl Bot {
                         }
                     }
 
-                    let events = page.events;
-                    for event in events {
-                        self.process_event(room_id, event).await?;
+                    for event in page.events {
+                        self.process_event(room_id, event, users).await?;
                     }
                 }
                 Ok(())
@@ -234,7 +268,12 @@ impl Bot {
         }
     }
 
-    async fn process_event(&self, room_id: &str, event: RoomTimelineEvent) -> Result<(), Error> {
+    async fn process_event(
+        &self,
+        room_id: &str,
+        event: RoomTimelineEvent,
+        users: Option<&HashMap<String, UserProfile>>,
+    ) -> Result<(), Error> {
         let Some(message_posted) = event.message_posted else {
             return Ok(());
         };
@@ -270,10 +309,16 @@ impl Bot {
             return Ok(());
         };
 
+        let actor_id = &message_posted.message.actor_id;
+        let actor_display = users
+            .and_then(|u| u.get(actor_id))
+            .and_then(|p| p.display_name.as_deref())
+            .unwrap_or(actor_id);
+
         info!(
             cmd = ?parsed.command,
             args = parsed.args,
-            actor = message_posted.message.actor_id,
+            actor = format!("{}[{}]", actor_display, actor_id),
             "processing command"
         );
 
@@ -296,6 +341,9 @@ impl Bot {
             }
             Command::Volume => {
                 self.cmd_volume(room_id, &parsed.args).await;
+            }
+            Command::Mute => {
+                self.cmd_mute(room_id).await;
             }
             Command::Test => {
                 self.cmd_test(room_id).await;
@@ -331,6 +379,7 @@ impl Bot {
             artist: first.artist.clone(),
             duration: first.duration,
             requestor: actor_id.to_owned(),
+            cover_url: first.cover_url.clone(),
         };
 
         let pos = {
@@ -375,7 +424,7 @@ impl Bot {
                         "{} · {} ({})\n\n",
                         current.track.title,
                         current.track.artist,
-                        format_duration(current.track.duration)
+                        format_duration(current.track.duration),
                     ));
                 }
                 for (idx, track) in list.iter().enumerate() {
@@ -420,21 +469,36 @@ impl Bot {
     }
 
     async fn cmd_skip(&self, room_id: &str) {
-        let skipped = {
+        let (title, voice_dead) = {
             let mut rooms = self.rooms.lock().await;
             let Some(rs) = rooms.get_mut(room_id) else {
                 return;
             };
-            if let Some(cancel) = rs.playback_cancel.take() {
-                cancel.store(true, Ordering::SeqCst);
+            let title = rs.current.as_ref().map(|c| c.track.title.clone());
+            let voice_dead = rs.voice.as_ref().is_none_or(|v| v.handle.is_finished());
+
+            if let Some(ref v) = rs.voice {
+                v.song_cancel.store(true, Ordering::SeqCst);
             }
-            rs.current.take()
+            if voice_dead {
+                rs.current = None;
+            }
+            (title, voice_dead)
         };
 
-        match skipped {
-            Some(current) => {
-                self.send_message(room_id, &card("Skipped", &current.track.title))
-                    .await;
+        if voice_dead {
+            self.send_message(
+                room_id,
+                &card("Skipped", "Not connected to voice."),
+            )
+            .await;
+            self.ensure_voice(room_id).await;
+            return;
+        }
+
+        match title {
+            Some(t) => {
+                self.send_message(room_id, &card("Skipped", &t)).await;
             }
             None => {
                 self.send_message(room_id, &card("Skipped", "Nothing playing."))
@@ -444,27 +508,23 @@ impl Bot {
     }
 
     async fn cmd_stop(&self, room_id: &str) {
-        let removed = {
-            let mut rooms = self.rooms.lock().await;
-            let Some(rs) = rooms.get_mut(room_id) else {
-                return;
-            };
-
-            if let Some(cancel) = rs.playback_cancel.take() {
-                cancel.store(true, Ordering::SeqCst);
-            }
-
-            let count = rs.queue.len();
-            rs.queue.clear();
-            rs.current = None;
-            count
+        let mut rooms = self.rooms.lock().await;
+        let Some(rs) = rooms.get_mut(room_id) else {
+            return;
         };
 
-        self.send_message(
-            room_id,
-            &card("Stopped", &format!("Removed {removed} queued track(s).")),
-        )
-        .await;
+        if let Some(v) = rs.voice.take() {
+            v.cancel.store(true, Ordering::SeqCst);
+            v.song_cancel.store(true, Ordering::SeqCst);
+        }
+
+        let count = rs.queue.len();
+        rs.queue.clear();
+        rs.current = None;
+
+        let msg = card("Stopped", &format!("Removed {count} queued track(s)."));
+        drop(rooms);
+        self.send_message(room_id, &msg).await;
     }
 
     async fn cmd_volume(&self, room_id: &str, args: &str) {
@@ -492,25 +552,51 @@ impl Bot {
 
         let mut volume = self.volume.lock().await;
         *volume = f64::from(pct) / 100.0;
+        self.volume_pct.store(pct as u32, Ordering::SeqCst);
         self.send_message(room_id, &card("Volume", &format!("Set to {}%", pct)))
             .await;
     }
 
+    async fn cmd_mute(&self, room_id: &str) {
+        let state = {
+            let mut rooms = self.rooms.lock().await;
+            let Some(rs) = rooms.get_mut(room_id) else {
+                self.send_message(room_id, &card("Mute", "No active room.")).await;
+                return;
+            };
+            let new_state = !rs.muted.load(Ordering::SeqCst);
+            rs.muted.store(new_state, Ordering::SeqCst);
+            new_state
+        };
+
+        let msg = if state {
+            card("Mute", "Microphone muted.")
+        } else {
+            card("Unmute", "Microphone unmuted.")
+        };
+        self.send_message(room_id, &msg).await;
+    }
+
     async fn auto_prepare_playback(&self) {
         for room_id in &self.cfg.rooms {
-            let next_track = {
+            let (track, has_current) = {
                 let mut rooms = self.rooms.lock().await;
                 let Some(rs) = rooms.get_mut(room_id) else {
                     continue;
                 };
-                if rs.current.is_some() || rs.playback_task.is_some() {
-                    None
+                let has_current = rs.current.is_some();
+                if has_current {
+                    (None, true)
                 } else {
-                    rs.queue.dequeue()
+                    (rs.queue.dequeue(), false)
                 }
             };
 
-            let Some(track) = next_track else {
+            if has_current {
+                continue;
+            }
+
+            let Some(track) = track else {
                 continue;
             };
 
@@ -527,18 +613,220 @@ impl Bot {
                 }
             };
 
-            {
+            let need_new_voice = {
                 let mut rooms = self.rooms.lock().await;
-                if let Some(rs) = rooms.get_mut(room_id) {
-                    rs.current = Some(CurrentTrack {
-                        track: track.clone(),
-                        audio_info: stream.format_audio_info(),
-                        stream_url: stream.stream_url.clone(),
-                    });
+                let Some(rs) = rooms.get_mut(room_id) else {
+                    continue;
+                };
+                rs.current = Some(CurrentTrack {
+                    track: track.clone(),
+                    audio_info: stream.format_audio_info(),
+                    stream_url: stream.stream_url.clone(),
+                });
+                let voice_alive = rs.voice.as_ref().is_some_and(|v| !v.handle.is_finished());
+                if voice_alive {
+                    if let Some(ref v) = rs.voice {
+                        *v.next_url.lock().await = Some(stream.stream_url.clone());
+                    }
+                }
+                !voice_alive
+            };
+
+            if need_new_voice {
+                self.ensure_voice(room_id).await;
+            }
+        }
+    }
+
+    async fn ensure_voice(&self, room_id: &str) {
+        let (stream_url, muted) = {
+            let rooms = self.rooms.lock().await;
+            let Some(rs) = rooms.get(room_id) else {
+                return;
+            };
+            let Some(ref current) = rs.current else {
+                return;
+            };
+            if rs.voice.as_ref().is_some_and(|v| !v.handle.is_finished()) {
+                return;
+            }
+            (
+                current.stream_url.clone(),
+                Arc::clone(&rs.muted),
+            )
+        };
+
+        let room_id_owned = room_id.to_owned();
+        let livekit_url = self.livekit_url.clone();
+        let sample_rate = self.cfg.sample_rate;
+        let chatto = self.chatto.clone();
+        let voice_cancel = Arc::new(AtomicBool::new(false));
+        let song_cancel = Arc::new(AtomicBool::new(false));
+        let next_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(Some(stream_url)));
+
+        let vc = Arc::clone(&voice_cancel);
+        let sc = Arc::clone(&song_cancel);
+        let nu = Arc::clone(&next_url);
+        let mu = Arc::clone(&muted);
+        let vp = Arc::clone(&self.volume_pct);
+        let db = Arc::clone(&self.rooms);
+        let rid = room_id_owned.clone();
+        let ch = chatto.clone();
+
+        let handle = tokio::spawn(async move {
+            let joined = match ch.join_call(&rid).await {
+                Ok(j) => j,
+                Err(e) => {
+                    warn!(room = rid, error = %e, "join call failed");
+                    let mut rooms = db.lock().await;
+                    if let Some(rs) = rooms.get_mut(&rid) {
+                        rs.current = None;
+                        rs.voice = None;
+                    }
+                    return;
+                }
+            };
+            if !joined {
+                warn!(room = rid, "voice channel required");
+                let mut rooms = db.lock().await;
+                if let Some(rs) = rooms.get_mut(&rid) {
+                    rs.current = None;
+                    rs.voice = None;
+                }
+                return;
+            }
+
+            let token = match ch.get_call_token(&rid).await {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(room = rid, error = %e, "get call token failed");
+                    let mut rooms = db.lock().await;
+                    if let Some(rs) = rooms.get_mut(&rid) {
+                        rs.current = None;
+                        rs.voice = None;
+                    }
+                    return;
+                }
+            };
+
+            let mut player = match LivekitPlayer::new(livekit_audio::Config {
+                url: livekit_url,
+                token: token.token,
+                room: rid.clone(),
+                sample_rate,
+            })
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(room = rid, error = %e, "livekit init failed");
+                    let mut rooms = db.lock().await;
+                    if let Some(rs) = rooms.get_mut(&rid) {
+                        rs.current = None;
+                        rs.voice = None;
+                    }
+                    return;
+                }
+            };
+
+            let source = match player.publish_track("mic").await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(room = rid, error = %e, "publish track failed");
+                    player.disconnect().await;
+                    let mut rooms = db.lock().await;
+                    if let Some(rs) = rooms.get_mut(&rid) {
+                        rs.current = None;
+                        rs.voice = None;
+                    }
+                    return;
+                }
+            };
+
+            info!(room = rid, "voice connected");
+
+            let sample_rate_p = player.sample_rate;
+
+            loop {
+                if vc.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                let url = nu.lock().await.take();
+
+                match url {
+                    Some(u) => {
+                        sc.store(false, Ordering::SeqCst);
+
+                        let result = LivekitPlayer::play_url_on_source(
+                            &source, &u, sample_rate_p, &vp, &sc, &mu,
+                        )
+                        .await;
+
+                        let mut rooms = db.lock().await;
+                        if let Some(rs) = rooms.get_mut(&rid) {
+                            rs.current = None;
+                        }
+                        drop(rooms);
+
+                        match result {
+                            Ok(()) => {}
+                            Err(livekit_audio::Error::Cancelled) => {}
+                            Err(e) => {
+                                error!(room = rid, error = %e, "playback error");
+                            }
+                        }
+                    }
+                    None => {
+                        LivekitPlayer::send_silence_frame(&source, sample_rate_p).await.ok();
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
                 }
             }
 
-            self.start_playback_task(room_id).await;
+            player.disconnect().await;
+            info!(room = rid, "voice disconnected");
+        });
+
+        {
+            let mut rooms = self.rooms.lock().await;
+            if let Some(rs) = rooms.get_mut(room_id) {
+                rs.voice = Some(VoiceConnection {
+                    handle,
+                    cancel: voice_cancel,
+                    song_cancel,
+                    next_url,
+                });
+            }
+        }
+    }
+
+    async fn reap_voice_tasks(&self) {
+        for room_id in &self.cfg.rooms {
+            let dead = {
+                let mut rooms = self.rooms.lock().await;
+                let Some(rs) = rooms.get_mut(room_id) else {
+                    continue;
+                };
+                let dead = rs
+                    .voice
+                    .as_ref()
+                    .is_some_and(|v| v.handle.is_finished());
+                if dead {
+                    rs.voice = None;
+                    rs.current = None;
+                }
+                dead
+            };
+
+            if dead {
+                error!(room = room_id, "voice task died unexpectedly");
+                self.send_message(
+                    room_id,
+                    &card("Voice Error", "Voice connection lost."),
+                )
+                .await;
+            }
         }
     }
 
@@ -596,137 +884,6 @@ impl Bot {
 
         player.disconnect().await;
     }
-
-    async fn start_playback_task(&self, room_id: &str) {
-        let (stream_url, already_running) = {
-            let rooms = self.rooms.lock().await;
-            let Some(rs) = rooms.get(room_id) else {
-                return;
-            };
-            let Some(current) = rs.current.as_ref() else {
-                return;
-            };
-            (current.stream_url.clone(), rs.playback_task.is_some())
-        };
-
-        if already_running {
-            return;
-        }
-
-        let room_id_owned = room_id.to_owned();
-        let livekit_url = self.livekit_url.clone();
-        let sample_rate = self.cfg.sample_rate;
-        let chatto = self.chatto.clone();
-        let volume = *self.volume.lock().await as f32;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_task = Arc::clone(&cancel);
-
-        let task = tokio::spawn(async move {
-            let joined = match chatto.join_call(&room_id_owned).await {
-                Ok(joined) => joined,
-                Err(err) => return PlaybackTaskResult::Error(format!("join call failed: {err}")),
-            };
-
-            if !joined {
-                return PlaybackTaskResult::VoiceRequired;
-            }
-
-            let token = match chatto.get_call_token(&room_id_owned).await {
-                Ok(token) => token,
-                Err(err) => {
-                    return PlaybackTaskResult::Error(format!("get call token failed: {err}"));
-                }
-            };
-
-            let mut player = match LivekitPlayer::new(livekit_audio::Config {
-                url: livekit_url,
-                token: token.token,
-                room: room_id_owned,
-                sample_rate,
-            })
-            .await
-            {
-                Ok(player) => player,
-                Err(err) => {
-                    return PlaybackTaskResult::Error(format!("livekit init failed: {err}"));
-                }
-            };
-
-            player.set_volume(volume);
-            let playback_result = player.play_url_until(&stream_url, cancel_for_task).await;
-            player.disconnect().await;
-
-            match playback_result {
-                Ok(()) => PlaybackTaskResult::Finished,
-                Err(livekit_audio::Error::Cancelled) => PlaybackTaskResult::Cancelled,
-                Err(err) => PlaybackTaskResult::Error(format!("playback failed: {err}")),
-            }
-        });
-
-        let mut rooms = self.rooms.lock().await;
-        if let Some(rs) = rooms.get_mut(room_id) {
-            rs.playback_task = Some(task);
-            rs.playback_cancel = Some(cancel);
-        }
-    }
-
-    async fn reap_playback_tasks(&self) {
-        for room_id in &self.cfg.rooms {
-            let finished_handle = {
-                let mut rooms = self.rooms.lock().await;
-                let Some(rs) = rooms.get_mut(room_id) else {
-                    continue;
-                };
-
-                if rs
-                    .playback_task
-                    .as_ref()
-                    .is_some_and(JoinHandle::is_finished)
-                {
-                    rs.playback_cancel = None;
-                    rs.playback_task.take()
-                } else {
-                    None
-                }
-            };
-
-            let Some(handle) = finished_handle else {
-                continue;
-            };
-
-            let task_result = match handle.await {
-                Ok(result) => result,
-                Err(err) => PlaybackTaskResult::Error(format!("playback task join error: {err}")),
-            };
-
-            let should_clear_current = !matches!(task_result, PlaybackTaskResult::Cancelled);
-            if should_clear_current {
-                let mut rooms = self.rooms.lock().await;
-                if let Some(rs) = rooms.get_mut(room_id) {
-                    rs.current = None;
-                }
-            }
-
-            match task_result {
-                PlaybackTaskResult::Finished | PlaybackTaskResult::Cancelled => {}
-                PlaybackTaskResult::VoiceRequired => {
-                    self.send_message(
-                        room_id,
-                        &card(
-                            "Voice Required",
-                            "Join a voice channel first, then use `play`.",
-                        ),
-                    )
-                    .await;
-                }
-                PlaybackTaskResult::Error(err) => {
-                    error!(room = room_id, error = %err, "playback task error");
-                    self.send_message(room_id, &card("Playback Error", &err.to_string()))
-                        .await;
-                }
-            }
-        }
-    }
 }
 
 fn parse_event_time(s: &str) -> Option<DateTime<Utc>> {
@@ -775,6 +932,6 @@ fn format_duration(seconds: i32) -> String {
 fn help_message() -> String {
     card(
         "Commands",
-        "play <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\ntest\nhelp",
+        "play <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\nmute / unmute\ntest\nhelp",
     )
 }
