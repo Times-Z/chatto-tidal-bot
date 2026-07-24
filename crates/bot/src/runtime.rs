@@ -1,12 +1,14 @@
 use crate::commands::{Command, parse_command};
+use crate::karaoke::{self, KaraokeRenderer};
 use crate::queue::{Queue, Track};
 use chatto::{Client as ChattoClient, RoomTimelineEvent, UserProfile};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use livekit_audio::Player as LivekitPlayer;
+use livekit_video::NativeVideoSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tidal::Client as TidalClient;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -44,6 +46,7 @@ struct VoiceConnection {
     cancel: Arc<AtomicBool>,
     song_cancel: Arc<AtomicBool>,
     next_url: Arc<Mutex<Option<String>>>,
+    video_source: Arc<Mutex<Option<NativeVideoSource>>>,
 }
 
 #[derive(Debug)]
@@ -53,6 +56,8 @@ struct RoomState {
     cursor: String,
     muted: Arc<AtomicBool>,
     voice: Option<VoiceConnection>,
+    lyrics_enabled: bool,
+    karaoke_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for RoomState {
@@ -63,6 +68,8 @@ impl Default for RoomState {
             cursor: String::new(),
             muted: Arc::new(AtomicBool::new(false)),
             voice: None,
+            lyrics_enabled: false,
+            karaoke_cancel: None,
         }
     }
 }
@@ -239,10 +246,7 @@ impl Bot {
         match self.chatto.get_room_events(room_id, &after, 50).await {
             Ok(resp) => {
                 if let Some(page) = resp.page {
-                    let users = page
-                        .includes
-                        .as_ref()
-                        .map(|inc| &inc.users);
+                    let users = page.includes.as_ref().map(|inc| &inc.users);
 
                     {
                         let mut rooms = self.rooms.lock().await;
@@ -347,6 +351,9 @@ impl Bot {
             }
             Command::Test => {
                 self.cmd_test(room_id).await;
+            }
+            Command::Lyrics => {
+                self.cmd_lyrics(room_id).await;
             }
         }
 
@@ -480,6 +487,10 @@ impl Bot {
             if let Some(ref v) = rs.voice {
                 v.song_cancel.store(true, Ordering::SeqCst);
             }
+            if let Some(ref cancel) = rs.karaoke_cancel {
+                cancel.store(true, Ordering::SeqCst);
+            }
+            rs.karaoke_cancel = None;
             if voice_dead {
                 rs.current = None;
             }
@@ -487,11 +498,8 @@ impl Bot {
         };
 
         if voice_dead {
-            self.send_message(
-                room_id,
-                &card("Skipped", "Not connected to voice."),
-            )
-            .await;
+            self.send_message(room_id, &card("Skipped", "Not connected to voice."))
+                .await;
             self.ensure_voice(room_id).await;
             return;
         }
@@ -516,6 +524,9 @@ impl Bot {
         if let Some(v) = rs.voice.take() {
             v.cancel.store(true, Ordering::SeqCst);
             v.song_cancel.store(true, Ordering::SeqCst);
+        }
+        if let Some(cancel) = rs.karaoke_cancel.take() {
+            cancel.store(true, Ordering::SeqCst);
         }
 
         let count = rs.queue.len();
@@ -561,7 +572,8 @@ impl Bot {
         let state = {
             let mut rooms = self.rooms.lock().await;
             let Some(rs) = rooms.get_mut(room_id) else {
-                self.send_message(room_id, &card("Mute", "No active room.")).await;
+                self.send_message(room_id, &card("Mute", "No active room."))
+                    .await;
                 return;
             };
             let new_state = !rs.muted.load(Ordering::SeqCst);
@@ -623,6 +635,12 @@ impl Bot {
                     audio_info: stream.format_audio_info(),
                     stream_url: stream.stream_url.clone(),
                 });
+                if rs.lyrics_enabled {
+                    if let Some(ref cancel) = rs.karaoke_cancel {
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                    rs.karaoke_cancel = None;
+                }
                 let voice_alive = rs.voice.as_ref().is_some_and(|v| !v.handle.is_finished());
                 if voice_alive {
                     if let Some(ref v) = rs.voice {
@@ -634,6 +652,17 @@ impl Bot {
 
             if need_new_voice {
                 self.ensure_voice(room_id).await;
+            }
+
+            {
+                let rooms = self.rooms.lock().await;
+                let should_start = rooms.get(room_id).is_some_and(|rs| {
+                    rs.lyrics_enabled && rs.current.is_some() && rs.karaoke_cancel.is_none()
+                });
+                if should_start {
+                    drop(rooms);
+                    self.start_karaoke(room_id).await;
+                }
             }
         }
     }
@@ -650,10 +679,7 @@ impl Bot {
             if rs.voice.as_ref().is_some_and(|v| !v.handle.is_finished()) {
                 return;
             }
-            (
-                current.stream_url.clone(),
-                Arc::clone(&rs.muted),
-            )
+            (current.stream_url.clone(), Arc::clone(&rs.muted))
         };
 
         let room_id_owned = room_id.to_owned();
@@ -663,6 +689,9 @@ impl Bot {
         let voice_cancel = Arc::new(AtomicBool::new(false));
         let song_cancel = Arc::new(AtomicBool::new(false));
         let next_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(Some(stream_url)));
+
+        let video_source: Arc<Mutex<Option<NativeVideoSource>>> = Arc::new(Mutex::new(None));
+        let vs_task = video_source.clone();
 
         let vc = Arc::clone(&voice_cancel);
         let sc = Arc::clone(&song_cancel);
@@ -743,6 +772,24 @@ impl Bot {
                 }
             };
 
+            // Publish video track if lyrics is currently enabled
+            {
+                let rooms = db.lock().await;
+                let lyrics_enabled = rooms.get(&rid).is_some_and(|rs| rs.lyrics_enabled);
+                if lyrics_enabled {
+                    if let Ok((src, _)) = livekit_video::publish_video_track(
+                        player.room(),
+                        "screenshare",
+                        livekit_video::DEFAULT_WIDTH,
+                        livekit_video::DEFAULT_HEIGHT,
+                    )
+                    .await
+                    {
+                        *vs_task.lock().await = Some(src);
+                    }
+                }
+            }
+
             info!(room = rid, "voice connected");
 
             let sample_rate_p = player.sample_rate;
@@ -752,6 +799,24 @@ impl Bot {
                     break;
                 }
 
+                // If lyrics was enabled after connect, publish video track now
+                if vs_task.lock().await.is_none() {
+                    let rooms = db.lock().await;
+                    if rooms.get(&rid).is_some_and(|rs| rs.lyrics_enabled) {
+                        drop(rooms);
+                        if let Ok((src, _)) = livekit_video::publish_video_track(
+                            player.room(),
+                            "screenshare",
+                            livekit_video::DEFAULT_WIDTH,
+                            livekit_video::DEFAULT_HEIGHT,
+                        )
+                        .await
+                        {
+                            *vs_task.lock().await = Some(src);
+                        }
+                    }
+                }
+
                 let url = nu.lock().await.take();
 
                 match url {
@@ -759,13 +824,22 @@ impl Bot {
                         sc.store(false, Ordering::SeqCst);
 
                         let result = LivekitPlayer::play_url_on_source(
-                            &source, &u, sample_rate_p, &vp, &sc, &mu,
+                            &source,
+                            &u,
+                            sample_rate_p,
+                            &vp,
+                            &sc,
+                            &mu,
                         )
                         .await;
 
                         let mut rooms = db.lock().await;
                         if let Some(rs) = rooms.get_mut(&rid) {
                             rs.current = None;
+                            if let Some(ref cancel) = rs.karaoke_cancel {
+                                cancel.store(true, Ordering::SeqCst);
+                            }
+                            rs.karaoke_cancel = None;
                         }
                         drop(rooms);
 
@@ -778,7 +852,9 @@ impl Bot {
                         }
                     }
                     None => {
-                        LivekitPlayer::send_silence_frame(&source, sample_rate_p).await.ok();
+                        LivekitPlayer::send_silence_frame(&source, sample_rate_p)
+                            .await
+                            .ok();
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
@@ -796,6 +872,7 @@ impl Bot {
                     cancel: voice_cancel,
                     song_cancel,
                     next_url,
+                    video_source,
                 });
             }
         }
@@ -808,10 +885,7 @@ impl Bot {
                 let Some(rs) = rooms.get_mut(room_id) else {
                     continue;
                 };
-                let dead = rs
-                    .voice
-                    .as_ref()
-                    .is_some_and(|v| v.handle.is_finished());
+                let dead = rs.voice.as_ref().is_some_and(|v| v.handle.is_finished());
                 if dead {
                     rs.voice = None;
                     rs.current = None;
@@ -821,11 +895,8 @@ impl Bot {
 
             if dead {
                 error!(room = room_id, "voice task died unexpectedly");
-                self.send_message(
-                    room_id,
-                    &card("Voice Error", "Voice connection lost."),
-                )
-                .await;
+                self.send_message(room_id, &card("Voice Error", "Voice connection lost."))
+                    .await;
             }
         }
     }
@@ -884,6 +955,158 @@ impl Bot {
 
         player.disconnect().await;
     }
+
+    async fn cmd_lyrics(&self, room_id: &str) {
+        let enable = {
+            let mut rooms = self.rooms.lock().await;
+            let Some(rs) = rooms.get_mut(room_id) else {
+                return;
+            };
+            rs.lyrics_enabled = !rs.lyrics_enabled;
+            if !rs.lyrics_enabled {
+                if let Some(cancel) = rs.karaoke_cancel.take() {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            rs.lyrics_enabled
+        };
+
+        if enable {
+            self.send_message(room_id, &card("Lyrics", "Karaoke screenshare enabled."))
+                .await;
+            self.start_karaoke(room_id).await;
+        } else {
+            self.send_message(room_id, &card("Lyrics", "Karaoke screenshare disabled."))
+                .await;
+        }
+    }
+
+    async fn start_karaoke(&self, room_id: &str) {
+        let (track, tidal, rooms) = {
+            let r = self.rooms.lock().await;
+            let Some(rs) = r.get(room_id) else {
+                return;
+            };
+            let Some(ref current) = rs.current else {
+                return;
+            };
+            (
+                current.track.clone(),
+                self.tidal.clone(),
+                self.rooms.clone(),
+            )
+        };
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut r = self.rooms.lock().await;
+            if let Some(rs) = r.get_mut(room_id) {
+                rs.karaoke_cancel = Some(cancel.clone());
+            }
+        }
+
+        let rid = room_id.to_owned();
+        tokio::spawn(async move {
+            let start = Instant::now();
+
+            let lyrics =
+                karaoke::fetch_lyrics(&tidal, track.tid, &track.title, &track.artist).await;
+
+            let bg = if !track.cover_url.is_empty() {
+                load_background(&track.cover_url).await
+            } else {
+                create_gradient_background(1920, 1080)
+            };
+
+            let lyrics_arc = lyrics.unwrap_or_else(|| Arc::new(Vec::new()));
+
+            let renderer = match KaraokeRenderer::new(
+                bg,
+                lyrics_arc,
+                track.title.clone(),
+                track.artist.clone(),
+                track.duration as f64,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(error = e, "failed to create karaoke renderer");
+                    return;
+                }
+            };
+
+            // Wait for the video source from the voice connection
+            let source = loop {
+                if cancel.load(Ordering::SeqCst) {
+                    return;
+                }
+                let r = rooms.lock().await;
+                if let Some(rs) = r.get(&rid) {
+                    if let Some(ref v) = rs.voice {
+                        let guard = v.video_source.lock().await;
+                        if let Some(ref src) = *guard {
+                            break src.clone();
+                        }
+                    }
+                }
+                drop(r);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+
+            tracing::info!(room = rid, "karaoke screenshare started");
+
+            livekit_video::run_frame_loop(
+                &source,
+                livekit_video::DEFAULT_FPS,
+                livekit_video::DEFAULT_WIDTH,
+                livekit_video::DEFAULT_HEIGHT,
+                &cancel,
+                |_timestamp_us, w, h| {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    let frame = renderer.render_frame(elapsed, w, h);
+                    frame.into_raw()
+                },
+            )
+            .await;
+
+            tracing::info!(room = rid, "karaoke screenshare ended");
+        });
+    }
+}
+
+async fn load_background(url: &str) -> image::RgbaImage {
+    match reqwest::get(url).await {
+        Ok(resp) if resp.status().is_success() => {
+            let bytes = match resp.bytes().await {
+                Ok(b) => b,
+                Err(_) => return create_gradient_background(1920, 1080),
+            };
+            match image::load_from_memory(&bytes) {
+                Ok(img) => {
+                    let resized =
+                        img.resize_exact(1920, 1080, image::imageops::FilterType::Lanczos3);
+                    let blurred = image::imageops::blur(&resized.to_rgba8(), 24.0);
+                    blurred
+                }
+                Err(_) => create_gradient_background(1920, 1080),
+            }
+        }
+        _ => create_gradient_background(1920, 1080),
+    }
+}
+
+fn create_gradient_background(w: u32, h: u32) -> image::RgbaImage {
+    use image::Rgba;
+    let mut img = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        let t = y as f32 / h as f32;
+        let r = (26.0 * (1.0 - t) + 22.0 * t) as u8;
+        let g = (26.0 * (1.0 - t) + 33.0 * t) as u8;
+        let b = (46.0 * (1.0 - t) + 62.0 * t) as u8;
+        for x in 0..w {
+            img.put_pixel(x, y, Rgba([r, g, b, 255]));
+        }
+    }
+    img
 }
 
 fn parse_event_time(s: &str) -> Option<DateTime<Utc>> {
@@ -932,6 +1155,6 @@ fn format_duration(seconds: i32) -> String {
 fn help_message() -> String {
     card(
         "Commands",
-        "play <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\nmute / unmute\ntest\nhelp",
+        "play <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\nmute / unmute\nlyrics\ntest\nhelp",
     )
 }

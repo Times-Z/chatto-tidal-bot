@@ -9,6 +9,7 @@ pub enum Command {
     Mute,
     Test,
     Help,
+    Lyrics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,7 @@ pub fn parse_command(body: &str, bot_name: &str) -> Option<ParsedCommand> {
         "mute" | "unmute" => Command::Mute,
         "test" => Command::Test,
         "help" => Command::Help,
+        "lyrics" => Command::Lyrics,
         _ => return None,
     };
 

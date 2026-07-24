@@ -116,6 +116,24 @@ pub struct Track {
     pub cover_url: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct LyricLine {
+    pub timestamp_ms: u64,
+    pub text: String,
+}
+
+impl LyricLine {
+    pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
+        parse_lrc(text)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Lyrics {
+    pub lines: Vec<LyricLine>,
+    pub plain: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackStream {
     pub stream_url: String,
@@ -361,6 +379,54 @@ impl Client {
             duration: item.duration,
             cover_url: cover,
         })
+    }
+
+    pub async fn get_lyrics(&mut self, id: u64) -> Result<Lyrics, Error> {
+        self.ensure_valid_token().await?;
+
+        let url = Url::parse_with_params(
+            &format!("{TIDAL_API_BASE}/tracks/{id}/lyrics"),
+            &[("countryCode", self.country_code.clone())],
+        )
+        .map_err(Error::ParseUrl)?;
+
+        let response = self
+            .http
+            .request(Method::GET, url)
+            .header(AUTHORIZATION, self.token.auth_header())
+            .send()
+            .await
+            .map_err(Error::Http)?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(Error::Http)?;
+        if !status.is_success() {
+            return Err(Error::Api { status, body });
+        }
+
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct TidalLyricsResponse {
+            #[serde(default)]
+            track_id: Option<u64>,
+            #[serde(default)]
+            lyrics: Option<String>,
+            #[serde(default)]
+            plain_lyrics: Option<String>,
+        }
+
+        let parsed: TidalLyricsResponse =
+            serde_json::from_str(&body).map_err(Error::ParseResponse)?;
+
+        let plain = parsed
+            .plain_lyrics
+            .or_else(|| parsed.lyrics.clone())
+            .unwrap_or_default();
+
+        let raw = parsed.lyrics.unwrap_or_default();
+        let lines = parse_lrc(&raw);
+
+        Ok(Lyrics { lines, plain })
     }
 
     pub async fn stream_track(&mut self, id: u64) -> Result<TrackStream, Error> {
@@ -822,6 +888,57 @@ fn token_from_response(resp: TokenResponse, fallback_refresh: Option<String>) ->
     }
 }
 
+fn parse_lrc(text: &str) -> Vec<LyricLine> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((ts, text)) = parse_lrc_line(line) {
+            lines.push(LyricLine {
+                timestamp_ms: ts,
+                text,
+            });
+        }
+    }
+    lines.sort_by_key(|l| l.timestamp_ms);
+    lines
+}
+
+fn parse_lrc_line(line: &str) -> Option<(u64, String)> {
+    let line = line.trim_start();
+    if !line.starts_with('[') {
+        return None;
+    }
+    let close = line.find(']')?;
+    let time_str = &line[1..close];
+    let text = line[close + 1..].trim().to_owned();
+    if text.is_empty() {
+        return None;
+    }
+    let ts = parse_lrc_timestamp(time_str)?;
+    Some((ts, text))
+}
+
+fn parse_lrc_timestamp(s: &str) -> Option<u64> {
+    // [mm:ss.xx] or [mm:ss.xxx] or [mm:ss:xx]
+    let s = s.trim();
+    let colon = s.find(':')?;
+    let minutes: u64 = s[..colon].parse().ok()?;
+    let rest = &s[colon + 1..];
+    let dot = rest.find(|c| c == '.' || c == ':').unwrap_or(rest.len());
+    let seconds: u64 = rest[..dot].parse().ok()?;
+    let millis = if dot < rest.len() {
+        let frac = &rest[dot + 1..];
+        let padded = format!("{:<03}", frac);
+        padded[..3].parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    };
+    Some(minutes * 60_000 + seconds * 1_000 + millis)
+}
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -922,6 +1039,7 @@ mod tests {
             artists: vec![TidalArtist {
                 name: "Other".to_owned(),
             }],
+            album: None,
         };
         assert_eq!(artist_name(&track), "Daft Punk");
 
@@ -933,6 +1051,7 @@ mod tests {
             artists: vec![TidalArtist {
                 name: "Daft Punk".to_owned(),
             }],
+            album: None,
         };
         assert_eq!(artist_name(&track), "Daft Punk");
     }

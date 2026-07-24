@@ -83,6 +83,7 @@ mod tests {
             artist: String::new(),
             duration,
             requestor: String::new(),
+            cover_url: String::new(),
         }
     }
 

@@ -8,7 +8,13 @@ license.workspace = true
 chatto = { path = "../chatto" }
 tidal = { path = "../tidal" }
 livekit_audio = { path = "../livekit_audio" }
+livekit_video = { path = "../livekit_video" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 chrono.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+image = "0.25"
+ab_glyph = "0.2"
+base64.workspace = true
+serde_json.workspace = true

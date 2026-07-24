@@ -71,6 +71,10 @@ impl Player {
         self.volume
     }
 
+    pub fn room(&self) -> &Room {
+        &self.room
+    }
+
     pub async fn publish_track(&mut self, track_name: &str) -> Result<NativeAudioSource, Error> {
         self.unpublish_track().await;
 
@@ -84,10 +88,7 @@ impl Player {
 
         self.room
             .local_participant()
-            .publish_track(
-                LocalTrack::Audio(track.clone()),
-                publish_options,
-            )
+            .publish_track(LocalTrack::Audio(track.clone()), publish_options)
             .await?;
 
         self.track = Some(track);

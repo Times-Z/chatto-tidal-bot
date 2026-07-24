@@ -5,6 +5,7 @@ members = [
     "crates/chatto",
     "crates/config",
     "crates/livekit_audio",
+    "crates/livekit_video",
     "crates/tidal",
 ]
 resolver = "3"

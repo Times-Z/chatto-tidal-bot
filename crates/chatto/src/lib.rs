@@ -75,11 +75,7 @@ impl Client {
             profile: UserProfile,
         }
         let resp: Resp = self
-            .do_rpc(
-                "chatto.api.v1.ViewerService",
-                "GetViewer",
-                Some(json!({})),
-            )
+            .do_rpc("chatto.api.v1.ViewerService", "GetViewer", Some(json!({})))
             .await?;
         Ok(resp.user.profile)
     }
