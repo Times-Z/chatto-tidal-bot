@@ -310,6 +310,11 @@ impl Bot {
         }
 
         let Some(parsed) = parse_command(&body, &self.cfg.bot_name) else {
+            self.send_message(
+                room_id,
+                "Unknown command. Type `/help` for a list of available commands.",
+            )
+            .await;
             return Ok(());
         };
 
