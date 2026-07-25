@@ -83,8 +83,10 @@ impl Player {
         let track =
             LocalAudioTrack::create_audio_track(track_name, RtcAudioSource::Native(source.clone()));
 
-        let mut publish_options = TrackPublishOptions::default();
-        publish_options.source = TrackSource::Microphone;
+        let publish_options = TrackPublishOptions {
+            source: TrackSource::Microphone,
+            ..Default::default()
+        };
 
         self.room
             .local_participant()

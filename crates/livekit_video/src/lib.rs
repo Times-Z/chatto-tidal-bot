@@ -32,8 +32,10 @@ pub async fn publish_video_track(
     let source = NativeVideoSource::new(resolution, true);
     let track = LocalVideoTrack::create_video_track(name, RtcVideoSource::Native(source.clone()));
 
-    let mut publish_options = TrackPublishOptions::default();
-    publish_options.source = TrackSource::Screenshare;
+    let publish_options = TrackPublishOptions {
+        source: TrackSource::Screenshare,
+        ..Default::default()
+    };
 
     room.local_participant()
         .publish_track(LocalTrack::Video(track.clone()), publish_options)
@@ -99,8 +101,8 @@ fn fill_i420_from_rgba(rgba: &[u8], buffer: &mut I420Buffer, w: u32, h: u32) {
         y_data[i] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
     }
 
-    let uw = (w + 1) / 2;
-    let uh = (h + 1) / 2;
+    let uw = w.div_ceil(2);
+    let uh = h.div_ceil(2);
     for j in 0..uh {
         for i in 0..uw {
             let mut r_sum = 0f32;

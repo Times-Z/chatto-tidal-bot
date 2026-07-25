@@ -642,10 +642,8 @@ impl Bot {
                     rs.karaoke_cancel = None;
                 }
                 let voice_alive = rs.voice.as_ref().is_some_and(|v| !v.handle.is_finished());
-                if voice_alive {
-                    if let Some(ref v) = rs.voice {
-                        *v.next_url.lock().await = Some(stream.stream_url.clone());
-                    }
+                if voice_alive && let Some(ref v) = rs.voice {
+                    *v.next_url.lock().await = Some(stream.stream_url.clone());
                 }
                 !voice_alive
             };
@@ -776,17 +774,16 @@ impl Bot {
             {
                 let rooms = db.lock().await;
                 let lyrics_enabled = rooms.get(&rid).is_some_and(|rs| rs.lyrics_enabled);
-                if lyrics_enabled {
-                    if let Ok((src, _)) = livekit_video::publish_video_track(
+                if lyrics_enabled
+                    && let Ok((src, _)) = livekit_video::publish_video_track(
                         player.room(),
                         "screenshare",
                         livekit_video::DEFAULT_WIDTH,
                         livekit_video::DEFAULT_HEIGHT,
                     )
                     .await
-                    {
-                        *vs_task.lock().await = Some(src);
-                    }
+                {
+                    *vs_task.lock().await = Some(src);
                 }
             }
 
@@ -963,10 +960,10 @@ impl Bot {
                 return;
             };
             rs.lyrics_enabled = !rs.lyrics_enabled;
-            if !rs.lyrics_enabled {
-                if let Some(cancel) = rs.karaoke_cancel.take() {
-                    cancel.store(true, Ordering::SeqCst);
-                }
+            if !rs.lyrics_enabled
+                && let Some(cancel) = rs.karaoke_cancel.take()
+            {
+                cancel.store(true, Ordering::SeqCst);
             }
             rs.lyrics_enabled
         };
@@ -1040,12 +1037,12 @@ impl Bot {
                     return;
                 }
                 let r = rooms.lock().await;
-                if let Some(rs) = r.get(&rid) {
-                    if let Some(ref v) = rs.voice {
-                        let guard = v.video_source.lock().await;
-                        if let Some(ref src) = *guard {
-                            break src.clone();
-                        }
+                if let Some(rs) = r.get(&rid)
+                    && let Some(ref v) = rs.voice
+                {
+                    let guard = v.video_source.lock().await;
+                    if let Some(ref src) = *guard {
+                        break src.clone();
                     }
                 }
                 drop(r);
@@ -1084,8 +1081,8 @@ async fn load_background(url: &str) -> image::RgbaImage {
                 Ok(img) => {
                     let resized =
                         img.resize_exact(1920, 1080, image::imageops::FilterType::Lanczos3);
-                    let blurred = image::imageops::blur(&resized.to_rgba8(), 24.0);
-                    blurred
+
+                    image::imageops::blur(&resized.to_rgba8(), 24.0)
                 }
                 Err(_) => create_gradient_background(1920, 1080),
             }

@@ -39,8 +39,8 @@ pub async fn fetch_lyrics(
 async fn fetch_lrclib(title: &str, artist: &str) -> Option<Vec<LyricLine>> {
     let url = format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}",
-        urlencoding(&title),
-        urlencoding(&artist),
+        urlencoding(title),
+        urlencoding(artist),
     );
 
     let client = reqwest::Client::builder()
@@ -381,7 +381,7 @@ pub fn rgba_to_i420(rgba: &RgbaImage) -> Vec<u8> {
     let w = rgba.width() as usize;
     let h = rgba.height() as usize;
     let y_size = w * h;
-    let uv_size = ((w + 1) / 2) * ((h + 1) / 2);
+    let uv_size = w.div_ceil(2) * h.div_ceil(2);
     let mut y_plane = vec![0u8; y_size];
     let mut u_plane = vec![0u8; uv_size];
     let mut v_plane = vec![0u8; uv_size];
@@ -393,8 +393,8 @@ pub fn rgba_to_i420(rgba: &RgbaImage) -> Vec<u8> {
         y_pixel[0] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
     }
 
-    for j in 0..(h + 1) / 2 {
-        for i in 0..(w + 1) / 2 {
+    for j in 0..h.div_ceil(2) {
+        for i in 0..w.div_ceil(2) {
             let mut r_acc = 0f32;
             let mut g_acc = 0f32;
             let mut b_acc = 0f32;
@@ -418,8 +418,8 @@ pub fn rgba_to_i420(rgba: &RgbaImage) -> Vec<u8> {
                 let r = r_acc / count as f32;
                 let g = g_acc / count as f32;
                 let b = b_acc / count as f32;
-                u_plane[j * ((w + 1) / 2) + i] = (-0.169 * r - 0.331 * g + 0.500 * b + 128.0) as u8;
-                v_plane[j * ((w + 1) / 2) + i] = (0.500 * r - 0.419 * g - 0.081 * b + 128.0) as u8;
+                u_plane[j * w.div_ceil(2) + i] = (-0.169 * r - 0.331 * g + 0.500 * b + 128.0) as u8;
+                v_plane[j * w.div_ceil(2) + i] = (0.500 * r - 0.419 * g - 0.081 * b + 128.0) as u8;
             }
         }
     }

@@ -927,7 +927,7 @@ fn parse_lrc_timestamp(s: &str) -> Option<u64> {
     let colon = s.find(':')?;
     let minutes: u64 = s[..colon].parse().ok()?;
     let rest = &s[colon + 1..];
-    let dot = rest.find(|c| c == '.' || c == ':').unwrap_or(rest.len());
+    let dot = rest.find(['.', ':']).unwrap_or(rest.len());
     let seconds: u64 = rest[..dot].parse().ok()?;
     let millis = if dot < rest.len() {
         let frac = &rest[dot + 1..];
