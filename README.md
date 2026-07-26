@@ -2,6 +2,11 @@
 
 A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi Plus** streams in voice channels via LiveKit. Supports **multiple rooms and voice channels simultaneously** — each room gets its own independent queue and playback.
 
+> ** warning: this project use a normal (human) account, not a bot account.**
+>
+> This bot is designed to run on a **normal user account** on your Chatto server.
+> Bot account are not currently available and may appear in the future.
+
 ![showcase](.github/assets/showcase.png)
 
 ## Architecture
