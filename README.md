@@ -1,13 +1,15 @@
 # Chatto Tidal Bot
 
-A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi Plus** streams in voice channels via LiveKit. Supports **multiple rooms and voice channels simultaneously** — each room gets its own independent queue and playback.
+A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi** streams in voice channels via LiveKit. 
+Supports **multiple rooms and voice channels simultaneously** — each room gets its own independent queue and playback.
 
 > **Requires Chatto 0.5+.**
 >
 > This bot runs as a native **bot account** (`Server Admin → Bots`) and authenticates
 > with a **bot API key** (`cht_BK_…`), as introduced in Chatto 0.5.
 
-![showcase](.github/assets/showcase.png)
+![showcase1](.github/assets/showcase1.png)
+![showcase2](.github/assets/showcase2.png)
 
 ## Architecture
 
