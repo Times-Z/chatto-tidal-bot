@@ -1,9 +1,9 @@
 {
     "chatto_url": "https://chat.example.com",
-    "chatto_token": "cht_...",
+    "chatto_token": "cht_BK_...",
     "livekit_url": "wss://livekit.example.com",
     "tidal_token_path": "tidal_token.json",
-    "bot_name": "tidal.bot",
+    "bot_name": "tidal_bot",
     "rooms": [
         "R1YR23T6P9wamep"
     ],

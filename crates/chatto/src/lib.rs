@@ -44,6 +44,8 @@ impl Client {
         .map(|_| ())
     }
 
+    /// The cursor is a oneof (`before`/`after`) serialized at the top level of
+    /// the request in ProtoJSON.
     pub async fn get_room_events(
         &self,
         room_id: &str,
@@ -53,7 +55,7 @@ impl Client {
         let req = if after_cursor.is_empty() {
             json!({"roomId": room_id, "limit": limit})
         } else {
-            json!({"roomId": room_id, "limit": limit, "cursor": {"after": after_cursor}})
+            json!({"roomId": room_id, "limit": limit, "after": after_cursor})
         };
 
         self.do_rpc("chatto.api.v1.RoomService", "GetRoomEvents", Some(req))
@@ -115,10 +117,12 @@ impl Client {
         Ok(resp.joined)
     }
 
-    pub async fn get_call_token(&self, room_id: &str) -> Result<CallToken, Error> {
+    /// Chatto 0.5 renamed `GetCallToken` to `CreateCallToken` (same request
+    /// and response fields, old route removed).
+    pub async fn create_call_token(&self, room_id: &str) -> Result<CallToken, Error> {
         self.do_rpc(
             "chatto.api.v1.VoiceCallService",
-            "GetCallToken",
+            "CreateCallToken",
             Some(json!({"roomId": room_id})),
         )
         .await
@@ -139,41 +143,40 @@ impl Client {
         Ok(resp.left)
     }
 
-    pub async fn update_presence(&self, status: &str, user_selected: bool) -> Result<(), Error> {
+    /// Chatto 0.5 renamed `UpdatePresence` to `SetPresence`.
+    pub async fn set_presence(&self, status: &str, user_selected: bool) -> Result<(), Error> {
         self.do_rpc::<_, serde_json::Value>(
             "chatto.api.v1.MyAccountService",
-            "UpdatePresence",
-            Some(json!({"status": status, "user_selected": user_selected})),
+            "SetPresence",
+            Some(json!({"status": status, "userSelected": user_selected})),
         )
         .await
         .map(|_| ())
     }
 
-    pub async fn update_custom_status(&self, emoji: &str, text: &str) -> Result<(), Error> {
-        self.do_rpc::<_, serde_json::Value>(
-            "chatto.api.v1.MyAccountService",
-            "UpdateCustomStatus",
-            Some(json!({"emoji": emoji, "text": text})),
-        )
-        .await
-        .map(|_| ())
-    }
-
-    pub async fn set_avatar(&self, image_data: &[u8]) -> Result<(), Error> {
+    /// Chatto 0.5.0-alpha.6 moved avatar upload from `MyAccountService` to
+    /// `UserService`; the request now carries a target `user_id`. A bot API
+    /// key may only target its own account.
+    pub async fn upload_avatar(&self, user_id: &str, image_data: &[u8]) -> Result<(), Error> {
         let url = format!(
-            "{}/api/connect/chatto.api.v1.MyAccountService/UploadAvatar",
+            "{}/api/connect/chatto.api.v1.UserService/UploadAvatar",
             self.base_url
         );
 
+        // ImageUpload { bytes image = 1; }
         let mut inner = Vec::with_capacity(image_data.len() + 10);
         inner.push(0x0A);
         encode_varint(&mut inner, image_data.len() as u64);
         inner.extend_from_slice(image_data);
 
-        let mut outer = Vec::with_capacity(inner.len() + 10);
+        // UploadAvatarRequest { ImageUpload image = 4; string user_id = 5; }
+        let mut outer = Vec::with_capacity(inner.len() + user_id.len() + 20);
         outer.push(0x22);
         encode_varint(&mut outer, inner.len() as u64);
         outer.extend_from_slice(&inner);
+        outer.push(0x2A);
+        encode_varint(&mut outer, user_id.len() as u64);
+        outer.extend_from_slice(user_id.as_bytes());
 
         let mut request = self
             .http_client
@@ -278,17 +281,20 @@ pub struct RpcError {
 
 pub fn is_not_member_error(err: &Error) -> bool {
     match err {
-        Error::Rpc(rpc) => rpc.body.to_ascii_lowercase().contains(ERR_TOKEN_NOT_MEMBER),
+        Error::Rpc(rpc) => {
+            let body = rpc.body.to_ascii_lowercase();
+            body.contains(ERR_TOKEN_NOT_MEMBER) || body.contains("not_found")
+        }
         _ => false,
     }
 }
 
 pub fn is_permission_denied_error(err: &Error) -> bool {
     match err {
-        Error::Rpc(rpc) => rpc
-            .body
-            .to_ascii_lowercase()
-            .contains(ERR_TOKEN_PERMISSION_DENIED),
+        Error::Rpc(rpc) => {
+            let body = rpc.body.to_ascii_lowercase();
+            body.contains(ERR_TOKEN_PERMISSION_DENIED) || body.contains("permission_denied")
+        }
         _ => false,
     }
 }
@@ -523,7 +529,7 @@ mod tests {
                 "/api/connect/chatto.api.v1.RoomService/GetRoomEvents",
             )
             .match_body(Matcher::JsonString(
-                r#"{"cursor":{"after":"c1"},"limit":10,"roomId":"room1"}"#.to_owned(),
+                r#"{"after":"c1","limit":10,"roomId":"room1"}"#.to_owned(),
             ))
             .with_status(200)
             .with_body(r#"{"page":{"events":[{"id":"evt1"}],"endCursor":"c2"}}"#)
@@ -575,7 +581,7 @@ mod tests {
         let token = server
             .mock(
                 "POST",
-                "/api/connect/chatto.api.v1.VoiceCallService/GetCallToken",
+                "/api/connect/chatto.api.v1.VoiceCallService/CreateCallToken",
             )
             .with_status(200)
             .with_body(r#"{"token":"jwt_token","e2eeKey":"key","callId":"call_1"}"#)
@@ -594,7 +600,7 @@ mod tests {
 
         let c = Client::new(&server.url(), "tok");
         assert!(c.join_call("room1").await.unwrap());
-        let tk = c.get_call_token("room1").await.unwrap();
+        let tk = c.create_call_token("room1").await.unwrap();
         assert_eq!(tk.token, "jwt_token");
         assert_eq!(tk.e2ee_key, "key");
         assert_eq!(tk.call_id, "call_1");
@@ -603,6 +609,33 @@ mod tests {
         join.assert_async().await;
         token.assert_async().await;
         leave.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_upload_avatar_targets_user_service_with_user_id() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock(
+                "POST",
+                "/api/connect/chatto.api.v1.UserService/UploadAvatar",
+            )
+            .match_header("content-type", "application/proto")
+            .match_body(Matcher::from(vec![
+                // UploadAvatarRequest.image = 4 (ImageUpload)
+                0x22, 0x05, //
+                // ImageUpload.image = 1 (bytes) = b"IMG"
+                0x0A, 0x03, b'I', b'M', b'G', //
+                // UploadAvatarRequest.user_id = 5 (string) = b"usr_1"
+                0x2A, 0x05, b'u', b's', b'r', b'_', b'1',
+            ]))
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let c = Client::new(&server.url(), "cht_BK_test");
+        c.upload_avatar("usr_1", b"IMG").await.unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -625,33 +658,21 @@ mod tests {
         let presence = server
             .mock(
                 "POST",
-                "/api/connect/chatto.api.v1.MyAccountService/UpdatePresence",
+                "/api/connect/chatto.api.v1.MyAccountService/SetPresence",
             )
             .match_body(Matcher::JsonString(
-                r#"{"status":"ONLINE","user_selected":true}"#.to_owned(),
+                r#"{"status":"ONLINE","userSelected":true}"#.to_owned(),
             ))
             .with_status(200)
-            .with_body("null")
-            .create_async()
-            .await;
-
-        let custom = server
-            .mock(
-                "POST",
-                "/api/connect/chatto.api.v1.MyAccountService/UpdateCustomStatus",
-            )
-            .with_status(200)
-            .with_body("null")
+            .with_body(r#"{"status":"PRESENCE_STATUS_ONLINE"}"#)
             .create_async()
             .await;
 
         let c = Client::new(&server.url(), "tok");
         c.create_message("room1", "hello").await.unwrap();
-        c.update_presence("ONLINE", true).await.unwrap();
-        c.update_custom_status("x", "listening").await.unwrap();
+        c.set_presence("ONLINE", true).await.unwrap();
 
         create_msg.assert_async().await;
         presence.assert_async().await;
-        custom.assert_async().await;
     }
 }

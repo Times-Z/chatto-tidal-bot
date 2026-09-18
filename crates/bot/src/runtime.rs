@@ -187,42 +187,38 @@ impl Bot {
             }
         };
 
-        match self.chatto.set_avatar(&data).await {
+        // Chatto 0.5: UserService.UploadAvatar requires a target user ID and
+        // a bot key can only target its own account.
+        match self.chatto.upload_avatar(&profile.id, &data).await {
             Ok(()) => info!("avatar set successfully"),
             Err(err) => warn!(error = %err, "failed to set avatar"),
         }
     }
 
     async fn join_rooms(&self) {
-        let bot_user_id = self.bot_user_id.lock().await.clone();
-        let Some(ref uid) = bot_user_id else {
-            warn!("bot user ID unknown, cannot join rooms");
-            return;
-        };
-
+        // Chatto 0.5 bots self-join through RoomService.JoinRoom once the bot
+        // has an effective room.join grant for the room (Server Admin -> Bots).
         for room_id in &self.cfg.rooms {
-            match self.chatto.add_member(room_id, uid).await {
+            match self.chatto.join_room(room_id).await {
                 Ok(()) => info!(room = room_id, "joined room"),
-                Err(err) => warn!(room = room_id, error = %err, "failed to join room"),
+                Err(err) => warn!(
+                    room = room_id,
+                    error = %err,
+                    "failed to join room (check the bot's room.join permission)"
+                ),
             }
         }
     }
 
+    /// Sets the bot's live presence. Custom status is not used: Chatto 0.5
+    /// only allows `SetCustomStatus` for human accounts.
     async fn set_presence(&self) {
         if let Err(err) = self
             .chatto
-            .update_presence("PRESENCE_STATUS_ONLINE", true)
+            .set_presence("PRESENCE_STATUS_ONLINE", true)
             .await
         {
             warn!(error = %err, "failed to set online presence");
-        }
-
-        if let Err(err) = self
-            .chatto
-            .update_custom_status("🎧", "Providing high-res songs")
-            .await
-        {
-            warn!(error = %err, "failed to set custom status");
         }
     }
 
@@ -728,7 +724,7 @@ impl Bot {
                 return;
             }
 
-            let token = match ch.get_call_token(&rid).await {
+            let token = match ch.create_call_token(&rid).await {
                 Ok(t) => t,
                 Err(e) => {
                     warn!(room = rid, error = %e, "get call token failed");
@@ -913,12 +909,12 @@ impl Bot {
         self.send_message(room_id, &card("Test", "Publishing 10s of silence..."))
             .await;
 
-        let token = match self.chatto.get_call_token(room_id).await {
+        let token = match self.chatto.create_call_token(room_id).await {
             Ok(token) => token,
             Err(err) => {
                 self.send_message(
                     room_id,
-                    &card("Test Error", &format!("Get call token: {err}")),
+                    &card("Test Error", &format!("Create call token: {err}")),
                 )
                 .await;
                 return;

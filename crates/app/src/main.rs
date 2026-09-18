@@ -4,7 +4,7 @@ use chatto::Client as ChattoClient;
 use config::AppConfig;
 use std::env;
 use tidal::Client as TidalClient;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() {
@@ -23,6 +23,12 @@ async fn run() -> Result<()> {
 
     let cfg = AppConfig::load_from_path(&config_path)
         .with_context(|| format!("failed to load config from {config_path}"))?;
+
+    // Chatto 0.5: bots authenticate with a named API key created in
+    // Server Admin -> Bots. Old human session tokens are no longer accepted.
+    if !cfg.chatto_token.starts_with("cht_BK_") {
+        warn!("chatto_token does not look like a bot API key (expected cht_BK_...)");
+    }
 
     let chatto_client = ChattoClient::new(&cfg.chatto_url, &cfg.chatto_token);
     let tidal_client = TidalClient::new(&cfg.tidal_token_path, &cfg.tidal_quality)

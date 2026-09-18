@@ -2,10 +2,10 @@
 
 A music bot for [Chatto](https://github.com/chattocorp/chatto) that plays **Tidal HiFi Plus** streams in voice channels via LiveKit. Supports **multiple rooms and voice channels simultaneously** — each room gets its own independent queue and playback.
 
-> **Warning: this project use a normal (human) account, not a bot account.**
+> **Requires Chatto 0.5+.**
 >
-> This bot is designed to run on a **normal user account** on your Chatto server.
-> Bot account are not currently available and may appear in the future.
+> This bot runs as a native **bot account** (`Server Admin → Bots`) and authenticates
+> with a **bot API key** (`cht_BK_…`), as introduced in Chatto 0.5.
 
 ![showcase](.github/assets/showcase.png)
 
@@ -17,7 +17,7 @@ User ──(play Daft Punk)──▶ Chatto ──▶ Bot (polling GetRoomEvents
                                             ├──▶ Tidal API (search + FLAC audio stream)
                                             │
                                             ├──▶ Chatto VoiceCallService
-                                            │     (JoinCall → GetCallToken)
+                                            │     (JoinCall → CreateCallToken)
                                             │
                                             └──▶ LiveKit (publish PCM16 audio)
                                                    │
@@ -26,7 +26,7 @@ User ──(play Daft Punk)──▶ Chatto ──▶ Bot (polling GetRoomEvents
 
 ## Prerequisites
 
-- A deployed Chatto server with LiveKit configured
+- A Chatto server running **0.5 or later** with LiveKit configured
 - A **Tidal HiFi Plus** account
 - `ffmpeg` installed on the bot machine
 
@@ -58,12 +58,12 @@ Copy `config.example.json` → `config.json` and fill in the fields:
 ```json
 {
     "chatto_url": "https://chat.example.com",
-    "chatto_token": "cht_...",
+    "chatto_token": "cht_BK_...",
     "livekit_url": "wss://livekit.example.com",
     "tidal_token_path": "tidal_token.json",
     "tidal_quality": "HI_RES_LOSSLESS",
     "sample_rate": 48000,
-    "bot_name": "tidal.bot",
+    "bot_name": "tidal_bot",
     "rooms": [
         "R1YR23T6P9wamep"
     ],
@@ -72,30 +72,43 @@ Copy `config.example.json` → `config.json` and fill in the fields:
 }
 ```
 
-### `chatto_token` — Bot bearer token
+### `chatto_token` — Bot API key
 
-**1. Create the bot account** on the Chatto server:
+Since Chatto 0.5, bots have first-class **bot accounts** with their own API keys.
 
-```bash
-chatto operator user create --login bot_username --password "the_password"
-```
+**1. Create the bot**: open **Server Admin → Bots → Create Bot** on your Chatto
+server. Choose a username ending in `_bot` (e.g. `tidal_bot`), a display name,
+and a name for the first API key.
 
-**2. Obtain the token**:
+**2. Copy the API key** (`cht_BK_…`) into `chatto_token` (or the `CHATTO_TOKEN`
+env var). Chatto shows the raw key only once. Treat it like a password: keep it
+out of source control and logs.
 
-```bash
-curl -X POST https://your-instance.chatto.run/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "login": "bot_username",
-    "password": "the_password"
-  }'
-```
+**3. Grant the bot the permissions it needs** on the bot's detail page
+(Server Admin → Bots → the bot). Bot permissions are an explicit allowlist
+starting empty, limited by the owner's own permissions:
 
-The response contains the token in the `"token"` field. You can also grab it from the browser DevTools (Application → Local Storage → `chatto_bearer_token`) after logging into the web UI as the bot.
+| Permission | Needed for |
+|------------|------------|
+| `room.join` | Joining the rooms listed in `rooms` on startup |
+| `message.read` | Reading chat commands in those rooms |
+| `message.post` | Replying with queue/now-playing messages |
+| `call.join` | Joining the room's voice call |
+| `call.voice` | Publishing the music track to the call |
+| `call.screenshare` | Publishing the karaoke lyrics video track (`/lyrics`) |
+
+You can also manage room membership directly from the bot's detail page
+(**Joined** row) without waiting for the bot to self-join.
+
+> Each bot supports up to 20 named API keys; create one per integration and
+> revoke individually. Old human session tokens (`cht_…`) are no longer
+> accepted by 0.5 servers.
 
 ### `bot_name` — Bot display name
 
-The bot's username on your Chatto server. Used to recognize mentions — messages like `@tidal.bot play ...` will trigger the bot. If omitted, defaults to `"tidal.bot"`.
+The bot's login on your Chatto server (bot logins end in `_bot`). Used to
+recognize mentions — messages like `@tidal_bot play ...` will trigger the bot.
+If omitted, defaults to `"tidal.bot"`.
 
 ### `chatto_url` — API endpoint
 
@@ -103,7 +116,7 @@ The base URL of your Chatto server (e.g. `https://chat.example.com`). Do **not**
 
 ### `livekit_url` — LiveKit server URL
 
-Defined in your Chatto configuration (`LIVEKIT_HOST` env var or config file). The bot connects via JWT tokens from `GetCallToken`. Format: `wss://livekit.domain.com` or `ws://IP:7880`.
+Defined in your Chatto configuration (`LIVEKIT_HOST` env var or config file). The bot connects via JWT tokens from `CreateCallToken`. Format: `wss://livekit.domain.com` or `ws://IP:7880`.
 
 ### `tidal_token_path` — Tidal auth token
 
@@ -136,11 +149,17 @@ Sample rate in Hz for the LiveKit PCM audio track and ffmpeg output. Must be sup
 
 ### `rooms` — Room IDs
 
-The bot must be an **explicit member** of each room to poll events. Add the bot user to the room through the Chatto web UI (Room settings → Members → Add user) or via API:
+The bot must be a **member** of each room to poll events. On startup it joins
+the configured rooms itself via `RoomService.JoinRoom`, which requires the
+`room.join` permission granted on the bot's detail page. You can also add it
+manually from the bot's **Joined** row (Server Admin → Bots) or through the
+Chatto web UI (Room settings → Members → Add user).
 
 To find a room ID, simply open the room in your browser — the ID is in the URL: `https://chat.example.com/rooms/<room_id>`.
 
-> **Note**: The bot automatically tries to add itself to the room on startup by calling `GetViewer` → `AddMember`. This only works if the bot user has `manage` permission on the room.
+> **Note**: Chatto 0.5 also requires the new `message.read` permission for the
+> bot to see messages in a room (membership alone is no longer enough), plus
+> `message.post` to answer commands.
 
 ### `volume` — Default playback volume (0–200)
 
