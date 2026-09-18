@@ -91,13 +91,12 @@ fn fill_i420_from_rgba(rgba: &[u8], buffer: &mut I420Buffer, w: u32, h: u32) {
     let (y_data, u_data, v_data) = buffer.data_mut();
     let frame_size = (w * h) as usize;
 
-    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
+    for (i, chunk) in rgba.as_chunks::<4>().0.iter().enumerate() {
         if i >= frame_size {
             break;
         }
-        let r = chunk[0] as f32;
-        let g = chunk[1] as f32;
-        let b = chunk[2] as f32;
+        let [r, g, b, _a] = *chunk;
+        let (r, g, b) = (r as f32, g as f32, b as f32);
         y_data[i] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
     }
 

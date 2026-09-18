@@ -386,11 +386,11 @@ pub fn rgba_to_i420(rgba: &RgbaImage) -> Vec<u8> {
     let mut u_plane = vec![0u8; uv_size];
     let mut v_plane = vec![0u8; uv_size];
 
-    for (src, y_pixel) in rgba.pixels().zip(y_plane.chunks_exact_mut(1)) {
+    for (src, y_pixel) in rgba.pixels().zip(y_plane.iter_mut()) {
         let r = src[0] as f32;
         let g = src[1] as f32;
         let b = src[2] as f32;
-        y_pixel[0] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+        *y_pixel = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
     }
 
     for j in 0..h.div_ceil(2) {
