@@ -1,4 +1,4 @@
-use crate::commands::{Command, parse_command};
+use crate::commands::{Command, is_addressed, parse_command};
 use crate::karaoke::{self, KaraokeRenderer};
 use crate::queue::{Queue, Track};
 use chatto::{Client as ChattoClient, RoomTimelineEvent, UserProfile};
@@ -86,6 +86,7 @@ pub struct Bot {
     started_at: DateTime<Utc>,
     seen_events: Arc<Mutex<HashSet<String>>>,
     bot_user_id: Arc<Mutex<Option<String>>>,
+    bot_login: Arc<Mutex<String>>,
 }
 
 impl Bot {
@@ -113,6 +114,7 @@ impl Bot {
             started_at: Utc::now(),
             seen_events: Arc::new(Mutex::new(HashSet::new())),
             bot_user_id: Arc::new(Mutex::new(None)),
+            bot_login: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -123,13 +125,18 @@ impl Bot {
     pub async fn run(&self) -> Result<(), Error> {
         self.set_presence().await;
 
-        match self.chatto.get_viewer().await {
-            Ok(id) => {
-                let mut uid = self.bot_user_id.lock().await;
-                *uid = Some(id);
+        match self.chatto.get_profile().await {
+            Ok(profile) => {
+                *self.bot_user_id.lock().await = Some(profile.id);
+                let login = profile.login.unwrap_or_default();
+                info!(login = %login, "authenticated as bot");
+                *self.bot_login.lock().await = login;
             }
             Err(err) => {
-                warn!(error = %err, "could not get bot user ID, own messages will not be filtered");
+                warn!(
+                    error = %err,
+                    "could not get bot profile, own messages will not be filtered and mentions may not be detected"
+                );
             }
         }
 
@@ -305,10 +312,20 @@ impl Bot {
             return Ok(());
         }
 
+        // A good bot stays out of normal conversation: only react when it is
+        // addressed, i.e. mentioned (@bot) or via an explicit "/command".
+        let addressed = {
+            let login = self.bot_login.lock().await;
+            is_addressed(&body, &[login.as_str(), self.cfg.bot_name.as_str()])
+        };
+        if !addressed {
+            return Ok(());
+        }
+
         let Some(parsed) = parse_command(&body, &self.cfg.bot_name) else {
             self.send_message(
                 room_id,
-                "Unknown command. Type `/help` for a list of available commands.",
+                "Unknown command. Type `/chatto-tidal help` for a list of available commands.",
             )
             .await;
             return Ok(());
@@ -1153,6 +1170,6 @@ fn format_duration(seconds: i32) -> String {
 fn help_message() -> String {
     card(
         "Commands",
-        "play <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\nmute / unmute\nlyrics\ntest\nhelp",
+        "Use /chatto-tidal <command> or mention me\nplay <track>\nqueue <track>\nqueue\nskip\nstop\nnowplaying\nvolume <0-200>\nmute / unmute\nlyrics\ntest\nhelp",
     )
 }

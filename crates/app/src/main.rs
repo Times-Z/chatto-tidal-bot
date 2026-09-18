@@ -38,7 +38,7 @@ async fn run() -> Result<()> {
         rooms: cfg.rooms.clone(),
         poll_interval: cfg.poll_interval,
         bot_name: if cfg.bot_name.trim().is_empty() {
-            "tidal.bot".to_owned()
+            "tidal_bot".to_owned()
         } else {
             cfg.bot_name.clone()
         },

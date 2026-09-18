@@ -106,9 +106,9 @@ You can also manage room membership directly from the bot's detail page
 
 ### `bot_name` — Bot display name
 
-The bot's login on your Chatto server (bot logins end in `_bot`). Used to
-recognize mentions — messages like `@tidal_bot play ...` will trigger the bot.
-If omitted, defaults to `"tidal.bot"`.
+Used as a fallback to recognize mentions (`@tidal_bot play ...`); the primary
+match is the bot's actual login, fetched automatically from the server via
+`GetViewer` at startup. If omitted, defaults to `"tidal_bot"`.
 
 ### `chatto_url` — API endpoint
 
@@ -175,15 +175,18 @@ The bot joins the configured rooms and listens for chat commands. Defaults to `c
 
 | Command | Description |
 |---------|-------------|
-| `play <query>` | Search and play a track (text search only) |
-| `queue <query>` | Add a track to the queue |
-| `queue` | Show the current queue |
-| `skip` | Skip to the next track |
-| `stop` | Stop playback and clear the queue |
-| `nowplaying` | Show the currently playing track |
-| `volume <0-200>` | Show or set the global volume |
-| `help` | Display available commands |
+| `/chatto-tidal play <query>` | Search and play a track (text search only) |
+| `/chatto-tidal queue <query>` | Add a track to the queue |
+| `/chatto-tidal queue` | Show the current queue |
+| `/chatto-tidal skip` | Skip to the next track |
+| `/chatto-tidal stop` | Stop playback and clear the queue |
+| `/chatto-tidal nowplaying` | Show the currently playing track |
+| `/chatto-tidal volume <0-200>` | Show or set the global volume |
+| `/chatto-tidal help` | Display available commands |
 
-Commands work with or without a leading `/`. When the bot is mentioned (e.g. `@tidal.bot play ...`), the `/` may be omitted entirely.
+The bot only reacts when it is addressed: either with the namespaced
+`/chatto-tidal` prefix, or with a mention (e.g. `@tidal_bot play ...`, with or
+without the `/`). Everything else — including other clients' slash commands —
+is left alone.
 
 The bot auto-joins the voice call when a track starts playing and stays in the call after the queue empties, ready for more tracks. Use `/stop` to leave the call.

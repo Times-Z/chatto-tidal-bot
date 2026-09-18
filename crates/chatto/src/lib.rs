@@ -331,6 +331,8 @@ pub struct GetRoomEventsResponse {
 pub struct UserProfile {
     pub id: String,
     #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub avatar_url: Option<String>,
