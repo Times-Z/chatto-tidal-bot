@@ -122,7 +122,11 @@ impl Player {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = ffmpeg.spawn()?;
+        let mut child = ffmpeg.spawn().map_err(|err| {
+            Error::FfmpegFailed(format!(
+                "could not start ffmpeg ({err}); is it installed and on the service PATH?"
+            ))
+        })?;
         let mut stdout = child
             .stdout
             .take()
